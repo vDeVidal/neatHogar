@@ -1,0 +1,69 @@
+services:
+  postgres-db:
+    image: postgres:16-alpine
+    container_name: neathogar-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-neathogar}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-neathogar_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-neathogar}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-neathogar} -d ${POSTGRES_DB:-neathogar}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - neathogar-net
+
+  nestjs-api:
+    build:
+      context: ./backend
+    container_name: neathogar-api
+    restart: unless-stopped
+    depends_on:
+      postgres-db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-neathogar}:${POSTGRES_PASSWORD:-neathogar_pass}@postgres-db:5432/${POSTGRES_DB:-neathogar}?schema=public
+      JWT_SECRET: ${JWT_SECRET:-cambia-este-secreto-en-produccion}
+      PORT: 3000
+      SEED_DB: ${SEED_DB:-true}
+    ports:
+      - "${API_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - neathogar-net
+
+  # Opcional: docker compose --profile tools up -d prisma-studio  →  http://localhost:5555
+  prisma-studio:
+    build:
+      context: ./backend
+    container_name: neathogar-prisma-studio
+    profiles: ["tools"]
+    depends_on:
+      nestjs-api:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-neathogar}:${POSTGRES_PASSWORD:-neathogar_pass}@postgres-db:5432/${POSTGRES_DB:-neathogar}?schema=public
+    entrypoint: ["npx", "prisma", "studio", "--port", "5555", "--hostname", "0.0.0.0", "--browser", "none"]
+    command: []
+    ports:
+      - "5555:5555"
+    networks:
+      - neathogar-net
+
+volumes:
+  pgdata:
+
+networks:
+  neathogar-net:
+    driver: bridge

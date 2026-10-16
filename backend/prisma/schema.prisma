@@ -1,0 +1,150 @@
+generator client {
+  provider = "prisma-client-js"
+  // linux-musl-openssl-3.0.x => imagen node:alpine del contenedor nestjs-api
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum RolMiembro {
+  ADMINISTRADOR
+  MIEMBRO
+}
+
+enum EstadoTarea {
+  PENDIENTE
+  COMPLETADA
+}
+
+enum TipoCategoria {
+  TAREA
+  COMPRA
+}
+
+enum NivelDisponibilidad {
+  ALTA
+  MEDIA
+  BAJA
+}
+
+model Usuario {
+  id_usuario          Int                 @id @default(autoincrement())
+  nombre              String
+  email               String              @unique
+  password_hash       String?
+  avatar_url          String?
+  disponibilidad      NivelDisponibilidad @default(MEDIA)
+  descripcion_carga   String?             // Ej: "Estudiante", "Trabajador tiempo completo"
+  tema_preferido      String              @default("noche_indigo")
+  fecha_registro      DateTime            @default(now())
+
+  membresias          MiembroHogar[]
+  tareas_creadas      Tarea[]             @relation("TareasCreador")
+  tareas_asignadas    Tarea[]             @relation("TareasAsignado")
+  items_creados       ItemCompra[]        @relation("ItemsCreador")
+  items_comprados     ItemCompra[]        @relation("ItemsComprador")
+  gastos_registrados  Gasto[]             @relation("GastosRegistrador") // [Extensión] Pantalla 7
+
+  @@map("usuario")
+}
+
+model Hogar {
+  id_hogar            Int                 @id @default(autoincrement())
+  nombre              String
+  codigo_invitacion   String              @unique
+  fecha_creacion      DateTime            @default(now())
+
+  miembros            MiembroHogar[]
+  tareas              Tarea[]
+  items_compra        ItemCompra[]
+  gastos              Gasto[]             // [Extensión] Pantalla 7
+
+  @@map("hogar")
+}
+
+model MiembroHogar {
+  id_miembro          Int                 @id @default(autoincrement())
+  id_usuario          Int
+  id_hogar            Int
+  rol                 RolMiembro          @default(MIEMBRO)
+  puntos_acumulados   Int                 @default(0)
+  fecha_ingreso       DateTime            @default(now())
+
+  usuario             Usuario             @relation(fields: [id_usuario], references: [id_usuario], onDelete: Cascade)
+  hogar               Hogar               @relation(fields: [id_hogar], references: [id_hogar], onDelete: Cascade)
+
+  @@unique([id_usuario, id_hogar])
+  @@map("miembro_hogar")
+}
+
+model Categoria {
+  id_categoria        Int                 @id @default(autoincrement())
+  nombre              String              // Ej: "Supermercado", "Ferretería", "Farmacia", "Limpieza"
+  tipo                TipoCategoria
+
+  tareas              Tarea[]
+  items_compra        ItemCompra[]
+
+  @@map("categoria")
+}
+
+model Tarea {
+  id_tarea            Int                 @id @default(autoincrement())
+  id_hogar            Int
+  id_creador          Int
+  id_asignado         Int?
+  id_categoria        Int?
+  titulo              String
+  descripcion         String?
+  puntos              Int                 @default(10) // Esfuerzo o dificultad de la tarea
+  estado              EstadoTarea         @default(PENDIENTE)
+  fecha_limite        DateTime?
+  fecha_creacion      DateTime            @default(now())
+  fecha_completada    DateTime?           // [Extensión] Permite graficar el progreso diario del Dashboard
+
+  hogar               Hogar               @relation(fields: [id_hogar], references: [id_hogar], onDelete: Cascade)
+  creador             Usuario             @relation("TareasCreador", fields: [id_creador], references: [id_usuario])
+  asignado            Usuario?            @relation("TareasAsignado", fields: [id_asignado], references: [id_usuario])
+  categoria           Categoria?          @relation(fields: [id_categoria], references: [id_categoria])
+
+  @@map("tarea")
+}
+
+model ItemCompra {
+  id_item             Int                 @id @default(autoincrement())
+  id_hogar            Int
+  id_creador          Int
+  id_comprador        Int?
+  id_categoria        Int?
+  nombre              String
+  cantidad            String              @default("1")
+  comprado            Boolean             @default(false)
+  fecha_creacion      DateTime            @default(now())
+  fecha_compra        DateTime?
+
+  hogar               Hogar               @relation(fields: [id_hogar], references: [id_hogar], onDelete: Cascade)
+  creador             Usuario             @relation("ItemsCreador", fields: [id_creador], references: [id_usuario])
+  comprador           Usuario?            @relation("ItemsComprador", fields: [id_comprador], references: [id_usuario])
+  categoria           Categoria?          @relation(fields: [id_categoria], references: [id_categoria])
+
+  @@map("item_compra")
+}
+
+// [Extensión] Registro simple de gastos del hogar para la vista "Gastos Generales"
+// de la Pantalla 7. No incluye pagos, transferencias ni finanzas avanzadas.
+model Gasto {
+  id_gasto            Int                 @id @default(autoincrement())
+  id_hogar            Int
+  id_registrador      Int
+  concepto            String              // Ej: "Arriendo", "Luz", "Agua", "Gastos Comunes"
+  monto               Int                 // Monto en pesos (CLP), sin decimales
+  fecha               DateTime            @default(now())
+
+  hogar               Hogar               @relation(fields: [id_hogar], references: [id_hogar], onDelete: Cascade)
+  registrador         Usuario             @relation("GastosRegistrador", fields: [id_registrador], references: [id_usuario])
+
+  @@map("gasto")
+}
