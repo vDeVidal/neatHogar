@@ -25,15 +25,41 @@ export function ChartProgress({
   const paddingTop = 20;
   const graphHeight = chartHeight - paddingBottom - paddingTop;
 
-  const maxVal = Math.max(...data.map((d) => Math.max(d.creadas, d.completadas)), 5);
-  const stepX = chartWidth / (data.length || 1);
+  const cleanData =
+    Array.isArray(data) && data.length > 0
+      ? data
+      : [
+          { fecha: '', dia: 'Lun', completadas: 0, creadas: 0 },
+          { fecha: '', dia: 'Mar', completadas: 0, creadas: 0 },
+          { fecha: '', dia: 'Mié', completadas: 0, creadas: 0 },
+          { fecha: '', dia: 'Jue', completadas: 0, creadas: 0 },
+          { fecha: '', dia: 'Vie', completadas: 0, creadas: 0 },
+          { fecha: '', dia: 'Sáb', completadas: 0, creadas: 0 },
+          { fecha: '', dia: 'Dom', completadas: 0, creadas: 0 },
+        ];
+
+  const maxValRaw = Math.max(
+    ...cleanData.map((d) =>
+      Math.max(
+        Number(d.creadas ?? (d as any).programadas ?? 0),
+        Number(d.completadas ?? 0)
+      )
+    ),
+    5
+  );
+  const maxVal = isFinite(maxValRaw) && maxValRaw > 0 ? maxValRaw : 5;
+  const stepX = chartWidth / (cleanData.length || 1);
 
   // Puntos para la línea de tareas completadas
-  const linePoints = data
+  const linePoints = cleanData
     .map((d, index) => {
       const x = index * stepX + stepX / 2;
-      const y = paddingTop + graphHeight - (d.completadas / maxVal) * graphHeight;
-      return `${x},${y}`;
+      const comp = Number(d.completadas ?? 0);
+      const safeComp = isFinite(comp) ? comp : 0;
+      const y = paddingTop + graphHeight - (safeComp / maxVal) * graphHeight;
+      const safeX = isFinite(x) ? x : 0;
+      const safeY = isFinite(y) ? y : paddingTop + graphHeight;
+      return `${safeX},${safeY}`;
     })
     .join(' ');
 
@@ -80,9 +106,9 @@ export function ChartProgress({
             <Line
               key={i}
               x1="0"
-              y1={y}
+              y1={isFinite(y) ? y : 0}
               x2={chartWidth}
-              y2={y}
+              y2={isFinite(y) ? y : 0}
               stroke={colors.border}
               strokeWidth="0.8"
               strokeDasharray="4,4"
@@ -92,19 +118,22 @@ export function ChartProgress({
         })}
 
         {/* Barras de creadas */}
-        {data.map((d, index) => {
+        {cleanData.map((d, index) => {
           const barWidth = 14;
           const x = index * stepX + stepX / 2 - barWidth / 2;
-          const h = (d.creadas / maxVal) * graphHeight;
-          const y = paddingTop + graphHeight - h;
+          const creadas = Number(d.creadas ?? (d as any).programadas ?? 0);
+          const safeCreadas = isFinite(creadas) ? creadas : 0;
+          const h = (safeCreadas / maxVal) * graphHeight;
+          const safeH = isFinite(h) ? h : 0;
+          const y = paddingTop + graphHeight - safeH;
 
           return (
             <Rect
               key={`bar-${index}`}
-              x={x}
-              y={y}
+              x={isFinite(x) ? x : 0}
+              y={isFinite(y) ? y : 0}
               width={barWidth}
-              height={Math.max(h, 2)}
+              height={Math.max(safeH, 2)}
               rx={4}
               fill="url(#barGrad)"
             />
@@ -112,7 +141,7 @@ export function ChartProgress({
         })}
 
         {/* Línea conectora de completadas */}
-        {data.length > 1 && (
+        {cleanData.length > 1 && (
           <Polyline
             points={linePoints}
             fill="none"
@@ -124,29 +153,34 @@ export function ChartProgress({
         )}
 
         {/* Puntos de completadas y etiquetas de días */}
-        {data.map((d, index) => {
+        {cleanData.map((d, index) => {
           const x = index * stepX + stepX / 2;
-          const y = paddingTop + graphHeight - (d.completadas / maxVal) * graphHeight;
+          const comp = Number(d.completadas ?? 0);
+          const safeComp = isFinite(comp) ? comp : 0;
+          const y = paddingTop + graphHeight - (safeComp / maxVal) * graphHeight;
+          const safeX = isFinite(x) ? x : 0;
+          const safeY = isFinite(y) ? y : paddingTop + graphHeight;
+          const diaLabel = d.dia || (d as any).etiqueta || '';
 
           return (
             <React.Fragment key={`dot-${index}`}>
               <Circle
-                cx={x}
-                cy={y}
+                cx={safeX}
+                cy={safeY}
                 r="4.5"
                 fill={colors.surface}
                 stroke={colors.primary}
                 strokeWidth="2.5"
               />
               <SvgText
-                x={x}
+                x={safeX}
                 y={chartHeight - 6}
                 fontSize="11"
                 fill={colors.textSecondary}
                 textAnchor="middle"
                 fontFamily={fonts.medium}
               >
-                {d.dia}
+                {diaLabel}
               </SvgText>
             </React.Fragment>
           );

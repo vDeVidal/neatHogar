@@ -1,11 +1,18 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { api, getApiToken, initApi, setApiToken } from '../services/api';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { Alert, AppState } from 'react-native';
+import {
+  api,
+  clearApiSession,
+  getApiToken,
+  initApi,
+  setActiveHogarId,
+} from '../services/api';
 import {
   MOCK_CATEGORIAS,
   MOCK_GASTOS,
   MOCK_HOGAR,
   MOCK_ITEMS_COMPRA,
+  MOCK_MIS_HOGARES,
   MOCK_PARTICIPACION,
   MOCK_PROGRESO_DIAS,
   MOCK_TAREAS,
@@ -13,27 +20,30 @@ import {
 } from '../services/mockData';
 import { useTheme } from '../theme/ThemeContext';
 import {
-  AuthResponse,
   Categoria,
   Gasto,
   HogarDetalle,
+  HogarResumen,
   ItemCompra,
+  MiembroHogar,
   MiembroParticipacion,
   ProgresoDia,
   RolMiembro,
   Tarea,
+  TipoHogar,
   Usuario,
 } from '../types';
 
 interface AuthContextValue {
   usuario: Usuario | null;
   hogar: HogarDetalle | null;
+  misHogares: HogarResumen[];
   rol: RolMiembro | null;
   isAuthenticated: boolean;
   isLoading: boolean;
   isDemoMode: boolean;
 
-  // Colecciones reactivas
+  // Colecciones reactivas del hogar activo
   tareas: Tarea[];
   compras: ItemCompra[];
   gastos: Gasto[];
@@ -41,30 +51,92 @@ interface AuthContextValue {
   participacion: MiembroParticipacion[];
   progreso: ProgresoDia[];
 
-  // Acciones de autenticación y vinculación
+  // Rol y permisos diferenciados según Tipo de Hogar
+  miembroActual: MiembroHogar | null;
+  esJefeDeHogar: boolean;
+  esHogarConJefe: boolean;
+  puedeValidarTareas: boolean;
+  puedeCrearTareasDirecto: boolean;
+  puedeGestionarComprasDirecto: boolean;
+  validacionesPendientesCount: number;
+
+  // Acciones de cuentas sencillas (Nombre + PIN) y tradicionales
+  loginConPin: (nombre: string, pin: string, codigoInvitacion?: string) => Promise<void>;
+  registroConPin: (nombre: string, pin: string) => Promise<void>;
   login: (email: string, password: string) => Promise<void>;
-  registro: (nombre: string, email: string, password: string) => Promise<void>;
+  registro: (nombre: string, email: string, password: string, pin?: string) => Promise<void>;
   logout: () => Promise<void>;
-  crearHogar: (nombre: string) => Promise<void>;
-  unirseHogar: (codigo: string) => Promise<void>;
+
+  // Multi-Hogar
+  crearHogar: (params: {
+    nombreHogar: string;
+    tipoHogar: TipoHogar;
+    nombreCreador?: string;
+    pinCreador?: string;
+  }) => Promise<void>;
+  unirseHogar: (params: {
+    codigo: string;
+    nombreMiembro?: string;
+    pinMiembro?: string;
+  }) => Promise<void>;
+  seleccionarHogar: (id_hogar: number) => Promise<void>;
+  salirHogarActual: () => Promise<void>;
+  cambiarTipoHogar: (tipo: TipoHogar) => Promise<void>;
   activarModoDemo: () => void;
   recargarDatos: () => Promise<void>;
 
-  // Acciones en vivo
+  // Acciones Tareas (con flujo de validación Jefe de Hogar)
   toggleTarea: (id_tarea: number) => Promise<void>;
-  agregarTarea: (dto: { titulo: string; descripcion?: string; id_asignado?: number | null; id_categoria?: number | null; puntos?: number }) => Promise<void>;
+  validarTarea: (id_tarea: number) => Promise<void>;
+  rechazarTarea: (id_tarea: number) => Promise<void>;
+  agregarTarea: (dto: {
+    titulo: string;
+    descripcion?: string;
+    id_asignado?: number | null;
+    id_categoria?: number | null;
+    puntos?: number;
+    fecha_limite?: string;
+  }) => Promise<Tarea | void>;
   eliminarTarea: (id_tarea: number) => Promise<void>;
 
+  // Acciones Compras (con flujo de validación Jefe de Hogar)
   toggleCompra: (id_item: number) => Promise<void>;
+  validarCompra: (id_item: number) => Promise<void>;
+  rechazarCompra: (id_item: number) => Promise<void>;
   agregarCompra: (dto: { nombre: string; cantidad?: string; id_categoria?: number | null }) => Promise<void>;
   eliminarCompra: (id_item: number) => Promise<void>;
   limpiarComprados: () => Promise<void>;
+  agregarCategoriaCompra: (nombre: string) => Promise<void>;
 
+  // Acciones Gastos (con flujo de validación Jefe de Hogar)
   agregarGasto: (dto: { concepto: string; monto: number }) => Promise<void>;
+  validarGasto: (id_gasto: number) => Promise<void>;
+  rechazarGasto: (id_gasto: number) => Promise<void>;
   eliminarGasto: (id_gasto: number) => Promise<void>;
 
+  // Perfil y Gestión de Miembros
   actualizarDisponibilidad: (disp: 'ALTA' | 'MEDIA' | 'BAJA', desc?: string) => Promise<void>;
-  invitarMiembro: (rol: RolMiembro) => Promise<{ codigo_invitacion: string }>;
+  actualizarPinPerfil: (nuevoPin: string) => Promise<void>;
+  invitarMiembro: (
+    rol: RolMiembro,
+    opciones?: {
+      puede_validar_tareas?: boolean;
+      puede_crear_tareas?: boolean;
+      puede_gestionar_compras?: boolean;
+      email?: string;
+      nombre?: string;
+    },
+  ) => Promise<{ codigo_invitacion: string }>;
+  cambiarPermisosMiembro: (
+    id_miembro: number,
+    permisos: {
+      rol?: RolMiembro;
+      puede_validar_tareas?: boolean;
+      puede_crear_tareas?: boolean;
+      puede_gestionar_compras?: boolean;
+    },
+  ) => Promise<void>;
+  eliminarMiembroHogar: (id_miembro: number) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -74,71 +146,95 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const [usuario, setUsuario] = useState<Usuario | null>(null);
   const [hogar, setHogar] = useState<HogarDetalle | null>(null);
+  const [misHogares, setMisHogares] = useState<HogarResumen[]>([]);
   const [rol, setRol] = useState<RolMiembro | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isDemoMode, setIsDemoMode] = useState(false);
 
-  // Estados reactivos locales
-  const [tareas, setTareas] = useState<Tarea[]>(MOCK_TAREAS);
-  const [compras, setCompras] = useState<ItemCompra[]>(MOCK_ITEMS_COMPRA);
-  const [gastos, setGastos] = useState<Gasto[]>(MOCK_GASTOS);
+  const [tareas, setTareas] = useState<Tarea[]>([]);
+  const [compras, setCompras] = useState<ItemCompra[]>([]);
+  const [gastos, setGastos] = useState<Gasto[]>([]);
   const [categorias, setCategorias] = useState<Categoria[]>(MOCK_CATEGORIAS);
-  const [participacion, setParticipacion] = useState<MiembroParticipacion[]>(MOCK_PARTICIPACION);
-  const [progreso, setProgreso] = useState<ProgresoDia[]>(MOCK_PROGRESO_DIAS);
+  const [participacion, setParticipacion] = useState<MiembroParticipacion[]>([]);
+  const [progreso, setProgreso] = useState<ProgresoDia[]>([]);
 
-  // Registrar sincronización de tema con el backend
+  // Sincronización de tema con backend
   useEffect(() => {
     registerSync(async (temaId) => {
       if (getApiToken() && !isDemoMode) {
         try {
           await api.updatePerfil({ tema_preferido: temaId });
         } catch {
-          // Si falla, se mantiene en memoria local
+          // Mantener tema local
         }
       }
     });
     return () => registerSync(null);
   }, [registerSync, isDemoMode]);
 
+  const limpiarEstadoLocal = useCallback(() => {
+    setUsuario(null);
+    setHogar(null);
+    setMisHogares([]);
+    setRol(null);
+    setIsDemoMode(false);
+    setTareas([]);
+    setCompras([]);
+    setGastos([]);
+    setParticipacion([]);
+    setProgreso([]);
+  }, []);
+
+  const cargarColeccionesHogar = useCallback(async () => {
+    if (!getApiToken() || isDemoMode) return;
+    const [tareasRes, comprasRes, gastosRes, catRes, partRes, progRes] = await Promise.allSettled([
+      api.getTareas(),
+      api.getCompras(),
+      api.getGastos(),
+      api.getCategorias(),
+      api.getParticipacion(),
+      api.getProgreso(7),
+    ]);
+
+    if (tareasRes.status === 'fulfilled') setTareas(tareasRes.value);
+    if (comprasRes.status === 'fulfilled') setCompras(comprasRes.value);
+    if (gastosRes.status === 'fulfilled') setGastos(gastosRes.value);
+    if (catRes.status === 'fulfilled') setCategorias(catRes.value);
+    if (partRes.status === 'fulfilled') setParticipacion(partRes.value);
+    if (progRes.status === 'fulfilled') setProgreso(progRes.value);
+  }, [isDemoMode]);
+
   const recargarDatos = useCallback(async () => {
     if (!getApiToken() || isDemoMode) return;
     try {
-      const [perfilRes, tareasRes, comprasRes, gastosRes, catRes, partRes, progRes] = await Promise.allSettled([
-        api.getPerfil(),
-        api.getTareas(),
-        api.getCompras(),
-        api.getGastos(),
-        api.getCategorias(),
-        api.getParticipacion(),
-        api.getProgreso(7),
-      ]);
+      const perfil = await api.getPerfil();
+      setUsuario(perfil.usuario);
+      setMisHogares(perfil.hogares ?? []);
 
-      if (perfilRes.status === 'fulfilled') {
-        setUsuario(perfilRes.value.usuario);
-        setRol(perfilRes.value.rol);
-        if (perfilRes.value.hogar) {
-          try {
-            const hDetalle = await api.getHogarActual();
-            setHogar(hDetalle);
-          } catch {
-            setHogar(perfilRes.value.hogar as HogarDetalle);
-          }
-        } else {
-          setHogar(null);
-        }
+      if (perfil.hogar) {
+        await setActiveHogarId(perfil.hogar.id_hogar);
+        setHogar(perfil.hogar);
+        setRol(perfil.hogar.mi_rol ?? perfil.rol);
+        await cargarColeccionesHogar();
+      } else {
+        await setActiveHogarId(null);
+        setHogar(null);
+        setRol(null);
+        setTareas([]);
+        setCompras([]);
+        setGastos([]);
+        setParticipacion([]);
+        setProgreso([]);
       }
-      if (tareasRes.status === 'fulfilled') setTareas(tareasRes.value);
-      if (comprasRes.status === 'fulfilled') setCompras(comprasRes.value);
-      if (gastosRes.status === 'fulfilled') setGastos(gastosRes.value);
-      if (catRes.status === 'fulfilled') setCategorias(catRes.value);
-      if (partRes.status === 'fulfilled') setParticipacion(partRes.value);
-      if (progRes.status === 'fulfilled') setProgreso(progRes.value);
-    } catch {
-      // Usar datos en memoria
+    } catch (e: any) {
+      if (e?.status === 401) {
+        await clearApiSession();
+        limpiarEstadoLocal();
+      }
     }
-  }, [isDemoMode]);
+  }, [isDemoMode, cargarColeccionesHogar, limpiarEstadoLocal]);
 
-  // Al iniciar la app: verificar token guardado o inicializar
+  // Inicialización al arrancar la app
   useEffect(() => {
     (async () => {
       try {
@@ -147,77 +243,132 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (token) {
           const perfil = await api.getPerfil();
           setUsuario(perfil.usuario);
-          setRol(perfil.rol);
+          setMisHogares(perfil.hogares ?? []);
           if (perfil.usuario.tema_preferido) {
             applyRemoteTheme(perfil.usuario.tema_preferido);
           }
           if (perfil.hogar) {
-            try {
-              const hDetalle = await api.getHogarActual();
-              setHogar(hDetalle);
-            } catch {
-              setHogar(perfil.hogar as HogarDetalle);
-            }
+            await setActiveHogarId(perfil.hogar.id_hogar);
+            setHogar(perfil.hogar);
+            setRol(perfil.hogar.mi_rol ?? perfil.rol);
+            await cargarColeccionesHogar();
+          } else {
+            await setActiveHogarId(null);
+            setHogar(null);
+            setRol(null);
           }
-          await recargarDatos();
         }
       } catch {
-        // En caso de que no haya conexión con el backend, no bloquear la app
+        // Si el token guardado ya no es válido o el usuario no existe, limpiar sesión
+        await clearApiSession();
+        limpiarEstadoLocal();
       } finally {
         setIsLoading(false);
       }
     })();
-  }, [applyRemoteTheme, recargarDatos]);
+  }, [applyRemoteTheme, cargarColeccionesHogar, limpiarEstadoLocal]);
+
+  // Auto-sincronización periódica para mantener 2 o más dispositivos/emuladores al día en vivo
+  useEffect(() => {
+    if (!usuario || isDemoMode || !getApiToken()) return;
+    const interval = setInterval(() => {
+      if (AppState.currentState === 'active') {
+        recargarDatos().catch(() => undefined);
+      }
+    }, 4500);
+    return () => clearInterval(interval);
+  }, [usuario?.id_usuario, hogar?.id_hogar, isDemoMode, recargarDatos]);
+
+  const aplicarRespuestaAuth = useCallback(
+    async (res: {
+      usuario: Usuario;
+      hogar: HogarDetalle | null;
+      rol: RolMiembro | null;
+      hogares?: HogarResumen[];
+    }) => {
+      setIsDemoMode(false);
+      setUsuario(res.usuario);
+      if (res.usuario.tema_preferido) {
+        applyRemoteTheme(res.usuario.tema_preferido);
+      }
+      const lista = res.hogares ?? (await api.getMisHogares().catch(() => []));
+      setMisHogares(lista);
+
+      if (res.hogar) {
+        await setActiveHogarId(res.hogar.id_hogar);
+        setHogar(res.hogar);
+        setRol(res.hogar.mi_rol ?? res.rol);
+        await cargarColeccionesHogar();
+      } else {
+        await setActiveHogarId(null);
+        setHogar(null);
+        setRol(null);
+        setTareas([]);
+        setCompras([]);
+        setGastos([]);
+        setParticipacion([]);
+        setProgreso([]);
+      }
+    },
+    [applyRemoteTheme, cargarColeccionesHogar],
+  );
+
+  // ───────────── Autenticación ─────────────
+
+  const loginConPin = useCallback(
+    async (nombre: string, pin: string, codigoInvitacion?: string) => {
+      const res = await api.loginConPin({
+        nombre: nombre.trim(),
+        pin: pin.trim(),
+        codigo_invitacion: codigoInvitacion?.trim() || undefined,
+      });
+      await aplicarRespuestaAuth(res);
+    },
+    [aplicarRespuestaAuth],
+  );
+
+  const registroConPin = useCallback(
+    async (nombre: string, pin: string) => {
+      const res = await api.registroConPin({
+        nombre: nombre.trim(),
+        pin: pin.trim(),
+      });
+      await aplicarRespuestaAuth(res);
+    },
+    [aplicarRespuestaAuth],
+  );
 
   const login = useCallback(
     async (email: string, password: string) => {
-      setIsLoading(true);
-      try {
-        const res = await api.login({ email, password });
-        setUsuario(res.usuario);
-        setRol(res.rol);
-        setIsDemoMode(false);
-        if (res.usuario.tema_preferido) {
-          applyRemoteTheme(res.usuario.tema_preferido);
-        }
-        if (res.hogar) {
-          try {
-            const h = await api.getHogarActual();
-            setHogar(h);
-          } catch {
-            setHogar(res.hogar as HogarDetalle);
-          }
-        } else {
-          setHogar(null);
-        }
-        await recargarDatos();
-      } finally {
-        setIsLoading(false);
-      }
+      const res = await api.login({ email: email.trim(), password });
+      await aplicarRespuestaAuth(res);
     },
-    [applyRemoteTheme, recargarDatos],
+    [aplicarRespuestaAuth],
   );
 
   const registro = useCallback(
-    async (nombre: string, email: string, password: string) => {
-      setIsLoading(true);
-      try {
-        const res = await api.registro({ nombre, email, password });
-        setUsuario(res.usuario);
-        setRol(res.rol);
-        setIsDemoMode(false);
-        setHogar(null);
-      } finally {
-        setIsLoading(false);
-      }
+    async (nombre: string, email: string, password: string, pin?: string) => {
+      const res = await api.registro({
+        nombre: nombre.trim(),
+        email: email.trim(),
+        password,
+        pin: pin?.trim() || undefined,
+      });
+      await aplicarRespuestaAuth(res);
     },
-    [],
+    [aplicarRespuestaAuth],
   );
+
+  const logout = useCallback(async () => {
+    await clearApiSession();
+    limpiarEstadoLocal();
+  }, [limpiarEstadoLocal]);
 
   const activarModoDemo = useCallback(() => {
     setIsDemoMode(true);
     setUsuario(MOCK_USUARIOS[0]);
     setHogar(MOCK_HOGAR);
+    setMisHogares(MOCK_MIS_HOGARES);
     setRol('ADMINISTRADOR');
     setTareas(MOCK_TAREAS);
     setCompras(MOCK_ITEMS_COMPRA);
@@ -228,315 +379,524 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     applyRemoteTheme('noche_indigo');
   }, [applyRemoteTheme]);
 
-  const logout = useCallback(async () => {
-    setApiToken(null);
-    setUsuario(null);
-    setHogar(null);
-    setRol(null);
-    setIsDemoMode(false);
-  }, []);
+  // ───────────── Multi-Hogar ─────────────
 
   const crearHogar = useCallback(
-    async (nombre: string) => {
-      if (isDemoMode || !usuario) {
-        const nuevoHogar: HogarDetalle = {
-          id_hogar: Date.now(),
-          nombre,
-          codigo_invitacion: `NH-${Math.floor(1000 + Math.random() * 9000)}`,
-          fecha_creacion: new Date().toISOString(),
-          miembros: [
-            {
-              id_miembro: 1,
-              id_usuario: usuario?.id_usuario ?? 1,
-              id_hogar: Date.now(),
-              rol: 'ADMINISTRADOR',
-              puntos_acumulados: 0,
-              fecha_ingreso: new Date().toISOString(),
-              usuario: usuario ?? MOCK_USUARIOS[0],
-            },
-          ],
-        };
-        setHogar(nuevoHogar);
-        setRol('ADMINISTRADOR');
-        return;
+    async (params: {
+      nombreHogar: string;
+      tipoHogar: TipoHogar;
+      nombreCreador?: string;
+      pinCreador?: string;
+    }) => {
+      if (!usuario || !getApiToken() || isDemoMode) {
+        if (!params.nombreCreador?.trim() || !params.pinCreador?.trim()) {
+          throw new Error('Ingresa tu nombre y un PIN de 4 a 6 dígitos para crear tu cuenta.');
+        }
+        const resAuth = await api.accesoConPin({
+          nombre: params.nombreCreador.trim(),
+          pin: params.pinCreador.trim(),
+        });
+        setUsuario(resAuth.usuario);
+        setIsDemoMode(false);
       }
-      const nuevo = await api.crearHogar({ nombre });
+
+      const nuevo = await api.crearHogar({
+        nombre: params.nombreHogar.trim(),
+        tipo_hogar: params.tipoHogar,
+      });
       setHogar(nuevo);
       setRol('ADMINISTRADOR');
-      await recargarDatos();
+      const lista = await api.getMisHogares();
+      setMisHogares(lista);
+      await cargarColeccionesHogar();
     },
-    [isDemoMode, usuario, recargarDatos],
+    [usuario, isDemoMode, cargarColeccionesHogar],
   );
 
   const unirseHogar = useCallback(
-    async (codigo: string) => {
-      if (isDemoMode || !usuario) {
-        setHogar({ ...MOCK_HOGAR, codigo_invitacion: codigo.toUpperCase() });
-        setRol('MIEMBRO');
-        return;
+    async (params: { codigo: string; nombreMiembro?: string; pinMiembro?: string }) => {
+      const codeClean = params.codigo.trim().toUpperCase();
+      if (!usuario || !getApiToken() || isDemoMode) {
+        if (!params.nombreMiembro?.trim() || !params.pinMiembro?.trim()) {
+          throw new Error('Ingresa tu nombre y un PIN de 4 a 6 dígitos para identificarte.');
+        }
+        const resAuth = await api.accesoConPin({
+          nombre: params.nombreMiembro.trim(),
+          pin: params.pinMiembro.trim(),
+        });
+        setUsuario(resAuth.usuario);
+        setIsDemoMode(false);
       }
-      const unido = await api.unirseHogar({ codigo_invitacion: codigo });
+
+      const unido = await api.unirseHogar({ codigo: codeClean, codigo_invitacion: codeClean });
       setHogar(unido);
-      setRol('MIEMBRO');
-      await recargarDatos();
+      const miMembresia = unido.miembros.find((m) => m.id_usuario === (usuario?.id_usuario ?? unido.miembros[unido.miembros.length - 1]?.id_usuario));
+      setRol(unido.mi_rol ?? miMembresia?.rol ?? 'MIEMBRO');
+      const lista = await api.getMisHogares();
+      setMisHogares(lista);
+      await cargarColeccionesHogar();
     },
-    [isDemoMode, usuario, recargarDatos],
+    [usuario, isDemoMode, cargarColeccionesHogar],
   );
 
-  // Manipulación de tareas
+  const seleccionarHogar = useCallback(
+    async (id_hogar: number) => {
+      if (isDemoMode) return;
+      const detalle = await api.activarHogar(id_hogar);
+      setHogar(detalle);
+      setRol(detalle.mi_rol ?? 'MIEMBRO');
+      const lista = await api.getMisHogares();
+      setMisHogares(lista);
+      await cargarColeccionesHogar();
+    },
+    [isDemoMode, cargarColeccionesHogar],
+  );
+
+  const salirHogarActual = useCallback(async () => {
+    if (isDemoMode) {
+      await logout();
+      return;
+    }
+    await api.salirHogar();
+    await recargarDatos();
+  }, [isDemoMode, logout, recargarDatos]);
+
+  const cambiarTipoHogar = useCallback(
+    async (tipo: TipoHogar) => {
+      if (isDemoMode) {
+        setHogar((prev) => (prev ? { ...prev, tipo_hogar: tipo } : null));
+        return;
+      }
+      const detalle = await api.actualizarTipoHogar(tipo);
+      setHogar(detalle);
+      const lista = await api.getMisHogares();
+      setMisHogares(lista);
+    },
+    [isDemoMode],
+  );
+
+  // ───────────── Tareas ─────────────
+
   const toggleTarea = useCallback(
     async (id_tarea: number) => {
       const actual = tareas.find((t) => t.id_tarea === id_tarea);
       if (!actual) return;
-      const completada = actual.estado === 'PENDIENTE';
 
-      // Actualización optimista
-      setTareas((prev) =>
-        prev.map((t) =>
-          t.id_tarea === id_tarea
-            ? {
-                ...t,
-                estado: completada ? 'COMPLETADA' : 'PENDIENTE',
-                fecha_completada: completada ? new Date().toISOString() : null,
-              }
-            : t,
-        ),
-      );
+      if (isDemoMode) {
+        setTareas((prev) =>
+          prev.map((t) =>
+            t.id_tarea === id_tarea
+              ? { ...t, estado: t.estado === 'COMPLETADA' ? 'PENDIENTE' : 'COMPLETADA' }
+              : t,
+          ),
+        );
+        return;
+      }
 
-      // Actualizar puntos de participación optimista
-      setParticipacion((prev) =>
-        prev.map((m) =>
-          m.id_usuario === actual.id_asignado
-            ? {
-                ...m,
-                puntos: completada ? m.puntos + actual.puntos : Math.max(0, m.puntos - actual.puntos),
-                tareasCompletadas: completada ? m.tareasCompletadas + 1 : Math.max(0, m.tareasCompletadas - 1),
-              }
-            : m,
-        ),
-      );
-
-      if (!isDemoMode && getApiToken()) {
-        try {
-          if (completada) {
-            await api.completarTarea(id_tarea);
+      try {
+        if (actual.estado === 'COMPLETADA' || actual.estado === 'POR_VALIDAR') {
+          const esJefe = rol === 'ADMINISTRADOR' || hogar?.tipo_hogar === 'COLABORATIVO';
+          if (actual.estado === 'POR_VALIDAR' && esJefe) {
+            await api.validarTarea(id_tarea);
           } else {
             await api.reabrirTarea(id_tarea);
           }
-        } catch {
-          // Si falla en backend, se puede revertir o sincronizar en recarga
+        } else {
+          await api.completarTarea(id_tarea);
         }
+        await recargarDatos();
+      } catch (e: any) {
+        Alert.alert('Aviso', e?.message || 'No se pudo actualizar la tarea');
       }
     },
-    [tareas, isDemoMode],
+    [tareas, isDemoMode, rol, hogar?.tipo_hogar, recargarDatos],
+  );
+
+  const validarTarea = useCallback(
+    async (id_tarea: number) => {
+      if (isDemoMode) return;
+      try {
+        await api.validarTarea(id_tarea);
+        await recargarDatos();
+      } catch (e: any) {
+        Alert.alert('Error', e?.message || 'No se pudo validar la tarea');
+      }
+    },
+    [isDemoMode, recargarDatos],
+  );
+
+  const rechazarTarea = useCallback(
+    async (id_tarea: number) => {
+      if (isDemoMode) return;
+      try {
+        await api.rechazarTarea(id_tarea);
+        await recargarDatos();
+      } catch (e: any) {
+        Alert.alert('Error', e?.message || 'No se pudo rechazar la tarea');
+      }
+    },
+    [isDemoMode, recargarDatos],
   );
 
   const agregarTarea = useCallback(
-    async (dto: { titulo: string; descripcion?: string; id_asignado?: number | null; id_categoria?: number | null; puntos?: number }) => {
-      if (!isDemoMode && getApiToken()) {
-        try {
-          const nueva = await api.crearTarea(dto);
-          setTareas((prev) => [nueva, ...prev]);
-          return;
-        } catch {
-          // Fallback a local
-        }
+    async (dto: {
+      titulo: string;
+      descripcion?: string;
+      id_asignado?: number | null;
+      id_categoria?: number | null;
+      puntos?: number;
+      fecha_limite?: string;
+    }) => {
+      if (isDemoMode) {
+        const nuevaLocal: Tarea = {
+          id_tarea: Date.now(),
+          id_hogar: hogar?.id_hogar ?? 1,
+          id_creador: usuario?.id_usuario ?? 1,
+          id_asignado: dto.id_asignado ?? null,
+          id_categoria: dto.id_categoria ?? null,
+          titulo: dto.titulo,
+          descripcion: dto.descripcion,
+          puntos: dto.puntos ?? 10,
+          estado: 'PENDIENTE',
+          fecha_creacion: new Date().toISOString(),
+          asignado: hogar?.miembros.find((m) => m.id_usuario === dto.id_asignado)?.usuario ?? null,
+          creador: usuario ?? MOCK_USUARIOS[0],
+          categoria: categorias.find((c) => c.id_categoria === dto.id_categoria) ?? null,
+        };
+        setTareas((prev) => [nuevaLocal, ...prev]);
+        return nuevaLocal;
       }
 
-      const asignadoObj = MOCK_USUARIOS.find((u) => u.id_usuario === dto.id_asignado) ?? usuario;
-      const catObj = categorias.find((c) => c.id_categoria === dto.id_categoria) ?? null;
-
-      const nuevaLocal: Tarea = {
-        id_tarea: Date.now(),
-        id_hogar: hogar?.id_hogar ?? 1,
-        id_creador: usuario?.id_usuario ?? 1,
-        id_asignado: dto.id_asignado ?? null,
-        id_categoria: dto.id_categoria ?? null,
-        titulo: dto.titulo,
-        descripcion: dto.descripcion,
-        puntos: dto.puntos ?? 10,
-        estado: 'PENDIENTE',
-        fecha_creacion: new Date().toISOString(),
-        asignado: asignadoObj,
-        creador: usuario ?? MOCK_USUARIOS[0],
-        categoria: catObj,
-      };
-      setTareas((prev) => [nuevaLocal, ...prev]);
+      const nueva = await api.crearTarea(dto);
+      await recargarDatos();
+      return nueva;
     },
-    [isDemoMode, usuario, hogar, categorias],
+    [isDemoMode, hogar, usuario, categorias, recargarDatos],
   );
 
   const eliminarTarea = useCallback(
     async (id_tarea: number) => {
-      setTareas((prev) => prev.filter((t) => t.id_tarea !== id_tarea));
-      if (!isDemoMode && getApiToken()) {
-        try {
-          await api.eliminarTarea(id_tarea);
-        } catch {
-          // Ignorar
-        }
+      if (isDemoMode) {
+        setTareas((prev) => prev.filter((t) => t.id_tarea !== id_tarea));
+        return;
+      }
+      try {
+        await api.eliminarTarea(id_tarea);
+        await recargarDatos();
+      } catch (e: any) {
+        Alert.alert('Error', e?.message || 'No se pudo eliminar la tarea');
       }
     },
-    [isDemoMode],
+    [isDemoMode, recargarDatos],
   );
 
-  // Manipulación de compras
+  // ───────────── Compras ─────────────
+
   const toggleCompra = useCallback(
     async (id_item: number) => {
-      setCompras((prev) =>
-        prev.map((item) =>
-          item.id_item === id_item
-            ? {
-                ...item,
-                comprado: !item.comprado,
-                fecha_compra: !item.comprado ? new Date().toISOString() : null,
-                comprador: !item.comprado ? usuario ?? MOCK_USUARIOS[0] : null,
-              }
-            : item,
-        ),
-      );
-      if (!isDemoMode && getApiToken()) {
-        try {
-          await api.alternarCompra(id_item);
-        } catch {
-          // Ignorar
-        }
+      if (isDemoMode) {
+        setCompras((prev) =>
+          prev.map((item) => (item.id_item === id_item ? { ...item, comprado: !item.comprado } : item)),
+        );
+        return;
+      }
+      try {
+        await api.alternarCompra(id_item);
+        await recargarDatos();
+      } catch (e: any) {
+        Alert.alert('Aviso', e?.message || 'No se pudo actualizar el producto');
       }
     },
-    [usuario, isDemoMode],
+    [isDemoMode, recargarDatos],
+  );
+
+  const validarCompra = useCallback(
+    async (id_item: number) => {
+      if (isDemoMode) return;
+      try {
+        await api.validarCompra(id_item);
+        await recargarDatos();
+      } catch (e: any) {
+        Alert.alert('Error', e?.message || 'No se pudo validar el producto');
+      }
+    },
+    [isDemoMode, recargarDatos],
+  );
+
+  const rechazarCompra = useCallback(
+    async (id_item: number) => {
+      if (isDemoMode) return;
+      try {
+        await api.rechazarCompra(id_item);
+        await recargarDatos();
+      } catch (e: any) {
+        Alert.alert('Error', e?.message || 'No se pudo rechazar el producto');
+      }
+    },
+    [isDemoMode, recargarDatos],
   );
 
   const agregarCompra = useCallback(
     async (dto: { nombre: string; cantidad?: string; id_categoria?: number | null }) => {
-      if (!isDemoMode && getApiToken()) {
-        try {
-          const nueva = await api.crearCompra(dto);
-          setCompras((prev) => [nueva, ...prev]);
-          return;
-        } catch {
-          // Fallback a local
-        }
+      if (isDemoMode) {
+        const nuevoItem: ItemCompra = {
+          id_item: Date.now(),
+          id_hogar: hogar?.id_hogar ?? 1,
+          id_creador: usuario?.id_usuario ?? 1,
+          id_comprador: null,
+          id_categoria: dto.id_categoria ?? null,
+          nombre: dto.nombre,
+          cantidad: dto.cantidad || '1',
+          comprado: false,
+          estado_validacion: 'APROBADO',
+          fecha_creacion: new Date().toISOString(),
+          creador: usuario ?? MOCK_USUARIOS[0],
+          categoria: categorias.find((c) => c.id_categoria === dto.id_categoria) ?? null,
+        };
+        setCompras((prev) => [nuevoItem, ...prev]);
+        return;
       }
-
-      const catObj = categorias.find((c) => c.id_categoria === dto.id_categoria) ?? null;
-      const nuevoItem: ItemCompra = {
-        id_item: Date.now(),
-        id_hogar: hogar?.id_hogar ?? 1,
-        id_creador: usuario?.id_usuario ?? 1,
-        id_comprador: null,
-        id_categoria: dto.id_categoria ?? null,
-        nombre: dto.nombre,
-        cantidad: dto.cantidad || '1',
-        comprado: false,
-        fecha_creacion: new Date().toISOString(),
-        creador: usuario ?? MOCK_USUARIOS[0],
-        categoria: catObj,
-      };
-      setCompras((prev) => [nuevoItem, ...prev]);
+      try {
+        await api.crearCompra(dto);
+        await recargarDatos();
+      } catch (e: any) {
+        Alert.alert('Error', e?.message || 'No se pudo agregar el producto');
+      }
     },
-    [isDemoMode, usuario, hogar, categorias],
+    [isDemoMode, hogar, usuario, categorias, recargarDatos],
   );
 
   const eliminarCompra = useCallback(
     async (id_item: number) => {
-      setCompras((prev) => prev.filter((i) => i.id_item !== id_item));
-      if (!isDemoMode && getApiToken()) {
-        try {
-          await api.eliminarCompra(id_item);
-        } catch {
-          // Ignorar
-        }
+      if (isDemoMode) {
+        setCompras((prev) => prev.filter((i) => i.id_item !== id_item));
+        return;
       }
+      try {
+        await api.eliminarCompra(id_item);
+        await recargarDatos();
+      } catch (e: any) {
+        Alert.alert('Aviso', e?.message || 'No se pudo eliminar el producto');
+      }
+    },
+    [isDemoMode, recargarDatos],
+  );
+
+  const limpiarComprados = useCallback(async () => {
+    if (isDemoMode) {
+      setCompras((prev) => prev.filter((i) => !i.comprado));
+      return;
+    }
+    try {
+      await api.limpiarComprasCompradas();
+      await recargarDatos();
+    } catch (e: any) {
+      Alert.alert('Aviso', e?.message || 'No se pudo limpiar la lista');
+    }
+  }, [isDemoMode, recargarDatos]);
+
+  const agregarCategoriaCompra = useCallback(
+    async (nombre: string) => {
+      if (isDemoMode) {
+        setCategorias((prev) => [...prev, { id_categoria: Date.now(), nombre, tipo: 'COMPRA' }]);
+        return;
+      }
+      const cat = await api.crearCategoria({ nombre, tipo: 'COMPRA' });
+      setCategorias((prev) => (prev.some((c) => c.id_categoria === cat.id_categoria) ? prev : [...prev, cat]));
     },
     [isDemoMode],
   );
 
-  const limpiarComprados = useCallback(async () => {
-    setCompras((prev) => prev.filter((i) => !i.comprado));
-    if (!isDemoMode && getApiToken()) {
-      try {
-        await api.limpiarComprasCompradas();
-      } catch {
-        // Ignorar
-      }
-    }
-  }, [isDemoMode]);
+  // ───────────── Gastos ─────────────
 
-  // Manipulación de gastos
   const agregarGasto = useCallback(
     async (dto: { concepto: string; monto: number }) => {
-      if (!isDemoMode && getApiToken()) {
-        try {
-          const nuevo = await api.crearGasto(dto);
-          setGastos((prev) => [nuevo, ...prev]);
-          return;
-        } catch {
-          // Fallback a local
-        }
+      if (isDemoMode) {
+        const nuevoGasto: Gasto = {
+          id_gasto: Date.now(),
+          id_hogar: hogar?.id_hogar ?? 1,
+          id_registrador: usuario?.id_usuario ?? 1,
+          concepto: dto.concepto,
+          monto: dto.monto,
+          estado_validacion: 'APROBADO',
+          fecha: new Date().toISOString(),
+          registrador: usuario ?? MOCK_USUARIOS[0],
+        };
+        setGastos((prev) => [nuevoGasto, ...prev]);
+        return;
       }
-      const nuevoGasto: Gasto = {
-        id_gasto: Date.now(),
-        id_hogar: hogar?.id_hogar ?? 1,
-        id_registrador: usuario?.id_usuario ?? 1,
-        concepto: dto.concepto,
-        monto: dto.monto,
-        fecha: new Date().toISOString(),
-        registrador: usuario ?? MOCK_USUARIOS[0],
-      };
-      setGastos((prev) => [nuevoGasto, ...prev]);
+      await api.crearGasto(dto);
+      await recargarDatos();
     },
-    [isDemoMode, usuario, hogar],
+    [isDemoMode, hogar, usuario, recargarDatos],
+  );
+
+  const validarGasto = useCallback(
+    async (id_gasto: number) => {
+      if (isDemoMode) return;
+      try {
+        await api.validarGasto(id_gasto);
+        await recargarDatos();
+      } catch (e: any) {
+        Alert.alert('Error', e?.message || 'No se pudo validar el gasto');
+      }
+    },
+    [isDemoMode, recargarDatos],
+  );
+
+  const rechazarGasto = useCallback(
+    async (id_gasto: number) => {
+      if (isDemoMode) return;
+      try {
+        await api.rechazarGasto(id_gasto);
+        await recargarDatos();
+      } catch (e: any) {
+        Alert.alert('Error', e?.message || 'No se pudo rechazar el gasto');
+      }
+    },
+    [isDemoMode, recargarDatos],
   );
 
   const eliminarGasto = useCallback(
     async (id_gasto: number) => {
-      setGastos((prev) => prev.filter((g) => g.id_gasto !== id_gasto));
-      if (!isDemoMode && getApiToken()) {
-        try {
-          await api.eliminarGasto(id_gasto);
-        } catch {
-          // Ignorar
-        }
+      if (isDemoMode) {
+        setGastos((prev) => prev.filter((g) => g.id_gasto !== id_gasto));
+        return;
+      }
+      try {
+        await api.eliminarGasto(id_gasto);
+        await recargarDatos();
+      } catch (e: any) {
+        Alert.alert('Aviso', e?.message || 'No se pudo eliminar el gasto');
       }
     },
-    [isDemoMode],
+    [isDemoMode, recargarDatos],
   );
 
-  // Actualizar disponibilidad
+  // ───────────── Perfil y Miembros ─────────────
+
   const actualizarDisponibilidad = useCallback(
     async (disp: 'ALTA' | 'MEDIA' | 'BAJA', desc?: string) => {
       if (usuario) {
         setUsuario({ ...usuario, disponibilidad: disp, descripcion_carga: desc ?? usuario.descripcion_carga });
       }
       if (!isDemoMode && getApiToken()) {
-        try {
-          await api.updatePerfil({ disponibilidad: disp, descripcion_carga: desc });
-        } catch {
-          // Ignorar
-        }
+        await api.updatePerfil({ disponibilidad: disp, descripcion_carga: desc }).catch(() => undefined);
+        await recargarDatos();
       }
     },
-    [usuario, isDemoMode],
+    [usuario, isDemoMode, recargarDatos],
   );
 
-  // Invitar miembro
-  const invitarMiembro = useCallback(
-    async (rolAsignado: RolMiembro) => {
-      if (!isDemoMode && getApiToken()) {
-        try {
-          return await api.invitarMiembro({ rol: rolAsignado });
-        } catch {
-          // Fallback
-        }
-      }
-      return { codigo_invitacion: hogar?.codigo_invitacion ?? 'NH-7824' };
+  const actualizarPinPerfil = useCallback(
+    async (nuevoPin: string) => {
+      if (isDemoMode) return;
+      await api.updatePerfil({ pin: nuevoPin.trim() });
     },
-    [isDemoMode, hogar],
+    [isDemoMode],
   );
+
+  const invitarMiembro = useCallback(
+    async (
+      rolAsignado: RolMiembro,
+      opciones?: {
+        puede_validar_tareas?: boolean;
+        puede_crear_tareas?: boolean;
+        puede_gestionar_compras?: boolean;
+        email?: string;
+        nombre?: string;
+      },
+    ) => {
+      if (!isDemoMode && getApiToken()) {
+        const actualizado = await api.invitarMiembro({
+          rol: rolAsignado,
+          puede_validar_tareas: opciones?.puede_validar_tareas,
+          puede_crear_tareas: opciones?.puede_crear_tareas,
+          puede_gestionar_compras: opciones?.puede_gestionar_compras,
+          email: opciones?.email,
+          nombre: opciones?.nombre,
+        });
+        setHogar(actualizado);
+        await recargarDatos();
+        return { codigo_invitacion: actualizado.codigo_invitacion };
+      }
+      return { codigo_invitacion: hogar?.codigo_invitacion ?? 'DEMO01' };
+    },
+    [isDemoMode, hogar, recargarDatos],
+  );
+
+  const cambiarPermisosMiembro = useCallback(
+    async (
+      id_miembro: number,
+      permisos: {
+        rol?: RolMiembro;
+        puede_validar_tareas?: boolean;
+        puede_crear_tareas?: boolean;
+        puede_gestionar_compras?: boolean;
+      },
+    ) => {
+      if (!isDemoMode && getApiToken()) {
+        const actualizado = await api.cambiarPermisosMiembro(id_miembro, permisos);
+        setHogar(actualizado);
+        await recargarDatos();
+        return;
+      }
+      setHogar((prev) =>
+        prev
+          ? {
+              ...prev,
+              miembros: prev.miembros.map((m) => (m.id_miembro === id_miembro ? { ...m, ...permisos } : m)),
+            }
+          : null,
+      );
+    },
+    [isDemoMode, recargarDatos],
+  );
+
+  const eliminarMiembroHogar = useCallback(
+    async (id_miembro: number) => {
+      if (!isDemoMode && getApiToken()) {
+        const actualizado = await api.eliminarMiembro(id_miembro);
+        setHogar(actualizado);
+        await recargarDatos();
+      }
+    },
+    [isDemoMode, recargarDatos],
+  );
+
+  // ───────────── Permisos derivados ─────────────
+
+  const miembroActual = useMemo(
+    () => hogar?.miembros.find((m) => m.id_usuario === usuario?.id_usuario) ?? null,
+    [hogar, usuario],
+  );
+
+  const esJefeDeHogar = rol === 'ADMINISTRADOR' || miembroActual?.rol === 'ADMINISTRADOR';
+  const esHogarConJefe = hogar?.tipo_hogar === 'JEFE_DE_HOGAR';
+
+  const puedeValidarTareas = Boolean(
+    !esHogarConJefe || esJefeDeHogar || miembroActual?.puede_validar_tareas === true,
+  );
+  const puedeCrearTareasDirecto = Boolean(
+    !esHogarConJefe || esJefeDeHogar || miembroActual?.puede_crear_tareas === true,
+  );
+  const puedeGestionarComprasDirecto = Boolean(
+    !esHogarConJefe || esJefeDeHogar || miembroActual?.puede_gestionar_compras === true,
+  );
+
+  const validacionesPendientesCount = useMemo(() => {
+    const tCount = tareas.filter((t) => t.estado === 'POR_VALIDAR' || t.estado === 'PROPUESTA').length;
+    const cCount = compras.filter(
+      (c) => c.estado_validacion === 'PENDIENTE_APROBACION' || c.estado_validacion === 'COMPRA_POR_VALIDAR',
+    ).length;
+    const gCount = gastos.filter((g) => g.estado_validacion === 'PENDIENTE_APROBACION').length;
+    return tCount + cCount + gCount;
+  }, [tareas, compras, gastos]);
 
   const value: AuthContextValue = {
     usuario,
     hogar,
+    misHogares,
     rol,
     isAuthenticated: Boolean(usuario),
     isLoading,
@@ -547,24 +907,46 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     categorias,
     participacion,
     progreso,
+    miembroActual,
+    esJefeDeHogar,
+    esHogarConJefe,
+    puedeValidarTareas,
+    puedeCrearTareasDirecto,
+    puedeGestionarComprasDirecto,
+    validacionesPendientesCount,
+    loginConPin,
+    registroConPin,
     login,
     registro,
     logout,
     crearHogar,
     unirseHogar,
+    seleccionarHogar,
+    salirHogarActual,
+    cambiarTipoHogar,
     activarModoDemo,
     recargarDatos,
     toggleTarea,
+    validarTarea,
+    rechazarTarea,
     agregarTarea,
     eliminarTarea,
     toggleCompra,
+    validarCompra,
+    rechazarCompra,
     agregarCompra,
     eliminarCompra,
     limpiarComprados,
+    agregarCategoriaCompra,
     agregarGasto,
+    validarGasto,
+    rechazarGasto,
     eliminarGasto,
     actualizarDisponibilidad,
+    actualizarPinPerfil,
     invitarMiembro,
+    cambiarPermisosMiembro,
+    eliminarMiembroHogar,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

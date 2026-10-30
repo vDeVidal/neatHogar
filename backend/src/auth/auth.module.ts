@@ -1,11 +1,13 @@
 import { Global, Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
+import { HogaresModule } from '../hogares/hogares.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 
 @Global()
 @Module({
   imports: [
+    HogaresModule,
     JwtModule.register({
       global: true,
       secret: process.env.JWT_SECRET ?? 'neathogar-dev-secret',

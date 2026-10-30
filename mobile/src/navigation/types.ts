@@ -10,6 +10,7 @@ export type MainTabParamList = {
 export type RootStackParamList = {
   Vinculacion: undefined;
   MainTabs: NavigatorScreenParams<MainTabParamList> | undefined;
+  InicioHogares: undefined;
   AddMember: undefined;
   CreacionTareas: undefined;
 };

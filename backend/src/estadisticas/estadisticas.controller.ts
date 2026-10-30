@@ -8,7 +8,7 @@ export class EstadisticasController {
 
   @Get('participacion')
   participacion(@UsuarioActual() u: UsuarioAutenticado) {
-    return this.estadisticas.participacion(u.id_usuario);
+    return this.estadisticas.participacion(u.id_usuario, u.id_hogar);
   }
 
   @Get('progreso')
@@ -17,6 +17,6 @@ export class EstadisticasController {
     @Query('dias', new DefaultValuePipe(7), ParseIntPipe) dias: number,
     @Query('tz', new DefaultValuePipe(0), ParseIntPipe) tz: number,
   ) {
-    return this.estadisticas.progreso(u.id_usuario, Math.min(Math.max(dias, 1), 31), tz);
+    return this.estadisticas.progreso(u.id_usuario, Math.min(Math.max(dias, 1), 31), tz, u.id_hogar);
   }
 }

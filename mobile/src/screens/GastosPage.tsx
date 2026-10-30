@@ -1,14 +1,14 @@
 import React, { useState } from 'react';
 import {
-  FlatList,
+  Alert,
   Modal,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { AppButton } from '../components/AppButton';
 import { AppCard } from '../components/AppCard';
@@ -17,26 +17,52 @@ import { SegmentedControl } from '../components/SegmentedControl';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../theme/ThemeContext';
 import { fonts, radius, shadow, spacing } from '../theme/tokens';
-import { Gasto, MiembroParticipacion, NivelDisponibilidad } from '../types';
+import { NivelDisponibilidad } from '../types';
 
 type VistaGastos = 'participacion' | 'gastos';
 
 export function GastosPage() {
   const { colors, theme } = useTheme();
-  const { gastos, participacion, agregarGasto, eliminarGasto } = useAuth();
+  const {
+    gastos,
+    participacion,
+    usuario,
+    esJefeDeHogar,
+    esHogarConJefe,
+    agregarGasto,
+    validarGasto,
+    rechazarGasto,
+    eliminarGasto,
+    recargarDatos,
+  } = useAuth();
 
   const [vista, setVista] = useState<VistaGastos>('gastos');
   const [modalGastoVisible, setModalGastoVisible] = useState(false);
   const [concepto, setConcepto] = useState('');
   const [monto, setMonto] = useState('');
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
-  // Formateador de moneda en pesos chilenos (CLP)
-  const formatearCLP = (valor: number) => {
-    return '$' + valor.toString().replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try {
+      await recargarDatos();
+    } finally {
+      setRefreshing(false);
+    }
   };
 
-  const totalGastosMes = gastos.reduce((acc, g) => acc + g.monto, 0);
+  const formatearCLP = (valor: number) =>
+    '$' + valor.toString().replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+
+  const gastosAprobados = gastos.filter(
+    (g) => g.estado_validacion !== 'PENDIENTE_APROBACION',
+  );
+  const gastosPendientes = gastos.filter(
+    (g) => g.estado_validacion === 'PENDIENTE_APROBACION',
+  );
+
+  const totalGastosMes = gastosAprobados.reduce((acc, g) => acc + g.monto, 0);
   const totalPuntosHogar = participacion.reduce((acc, p) => acc + p.puntos, 0);
 
   const getDisponibilidadColor = (disp: NivelDisponibilidad) => {
@@ -51,14 +77,13 @@ export function GastosPage() {
     }
   };
 
-  const getIniciales = (nombre: string) => {
-    return nombre
+  const getIniciales = (nombre: string) =>
+    nombre
       .split(' ')
       .map((p) => p[0])
       .slice(0, 2)
       .join('')
       .toUpperCase();
-  };
 
   const handleCrearGasto = async () => {
     if (!concepto.trim() || !monto.trim()) return;
@@ -74,15 +99,16 @@ export function GastosPage() {
       setConcepto('');
       setMonto('');
       setModalGastoVisible(false);
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'No se pudo registrar el gasto');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
+    <View style={[styles.root, { backgroundColor: colors.background }]}>
       <View style={styles.container}>
-        {/* Header */}
         <View style={styles.header}>
           <View>
             <Text style={[styles.subTag, { color: colors.secondary }]}>Métricas & Finanzas</Text>
@@ -105,7 +131,6 @@ export function GastosPage() {
           )}
         </View>
 
-        {/* Selector de Vista: "Gastos Generales" vs "Participación / Puntos" */}
         <SegmentedControl
           values={[
             { key: 'gastos', label: 'Gastos Generales' },
@@ -116,18 +141,27 @@ export function GastosPage() {
         />
 
         {vista === 'gastos' ? (
-          /* Vista: Gastos Generales (Mockup Pantalla 7) */
-          <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-            {/* Tarjeta de Resumen Total */}
+          <ScrollView
+            contentContainerStyle={styles.scrollContent}
+            showsVerticalScrollIndicator={false}
+            refreshControl={
+              <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={colors.primary} />
+            }
+          >
             <AppCard style={styles.heroCard}>
               <View style={styles.heroRow}>
-                <View>
-                  <Text style={[styles.heroLabel, { color: colors.textSecondary }]}>Total Gastos del Mes</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.heroLabel, { color: colors.textSecondary }]}>
+                    Total Gastos Validados del Mes
+                  </Text>
                   <Text style={[styles.heroAmount, { color: colors.textPrimary }]}>
                     {formatearCLP(totalGastosMes)}
                   </Text>
                   <Text style={[styles.heroSub, { color: colors.secondary }]}>
-                    {gastos.length} registros en el núcleo
+                    {gastosAprobados.length} confirmados
+                    {gastosPendientes.length > 0
+                      ? ` • ${gastosPendientes.length} por validar`
+                      : ''}
                   </Text>
                 </View>
                 <View style={[styles.heroIconBadge, { backgroundColor: colors.primary }]}>
@@ -136,10 +170,13 @@ export function GastosPage() {
               </View>
             </AppCard>
 
-            {/* Botón Ingresar Gasto Destacado */}
             <View style={styles.actionRow}>
               <AppButton
-                title="Ingresar Gasto"
+                title={
+                  esHogarConJefe && !esJefeDeHogar
+                    ? 'Informar Gasto al Jefe de Hogar'
+                    : 'Ingresar Gasto'
+                }
                 icon="cash-outline"
                 onPress={() => setModalGastoVisible(true)}
                 variant="primary"
@@ -147,52 +184,119 @@ export function GastosPage() {
               />
             </View>
 
-            {/* Lista de Gastos */}
-            <Text style={[styles.sectionTitle, { color: colors.textPrimary }]}>Historial de Gastos</Text>
+            <Text style={[styles.sectionTitle, { color: colors.textPrimary }]}>
+              Historial de Gastos
+            </Text>
 
-            {gastos.map((g) => {
-              const fechaStr = new Date(g.fecha).toLocaleDateString('es-CL', {
-                day: '2-digit',
-                month: 'short',
-              });
+            {gastos.length === 0 ? (
+              <AppCard style={styles.emptyCard}>
+                <Ionicons name="receipt-outline" size={36} color={colors.textSecondary + '70'} />
+                <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
+                  Aún no hay gastos registrados este mes
+                </Text>
+              </AppCard>
+            ) : (
+              gastos.map((g) => {
+                const fechaStr = new Date(g.fecha).toLocaleDateString('es-CL', {
+                  day: '2-digit',
+                  month: 'short',
+                });
+                const isPendiente = g.estado_validacion === 'PENDIENTE_APROBACION';
+                const puedeBorrar =
+                  !esHogarConJefe ||
+                  esJefeDeHogar ||
+                  (isPendiente && g.id_registrador === usuario?.id_usuario);
 
-              return (
-                <AppCard key={g.id_gasto} style={styles.gastoCard}>
-                  <View style={styles.gastoRow}>
-                    <View style={[styles.gastoIcon, { backgroundColor: colors.softBg }]}>
-                      <Ionicons name="receipt-outline" size={22} color={colors.primary} />
+                return (
+                  <AppCard
+                    key={g.id_gasto}
+                    style={{
+                      ...styles.gastoCard,
+                      borderColor: isPendiente ? colors.warning : colors.border,
+                      borderWidth: isPendiente ? 1.3 : 1,
+                    }}
+                  >
+                    <View style={styles.gastoRow}>
+                      <View
+                        style={[
+                          styles.gastoIcon,
+                          {
+                            backgroundColor: isPendiente
+                              ? colors.warning + '22'
+                              : colors.softBg,
+                          },
+                        ]}
+                      >
+                        <Ionicons
+                          name={isPendiente ? 'hourglass-outline' : 'receipt-outline'}
+                          size={21}
+                          color={isPendiente ? colors.warning : colors.primary}
+                        />
+                      </View>
+
+                      <View style={styles.gastoInfo}>
+                        <Text style={[styles.gastoConcepto, { color: colors.textPrimary }]}>
+                          {g.concepto}
+                        </Text>
+                        <Text style={[styles.gastoMeta, { color: colors.textSecondary }]}>
+                          {fechaStr} • Por {g.registrador?.nombre ?? 'Integrante'}
+                        </Text>
+                        {isPendiente && (
+                          <Text style={[styles.pendingTagText, { color: colors.warning }]}>
+                            Pendiente de validación del Jefe de Hogar
+                          </Text>
+                        )}
+                      </View>
+
+                      <View style={styles.gastoRight}>
+                        <Text style={[styles.gastoMonto, { color: colors.textPrimary }]}>
+                          {formatearCLP(g.monto)}
+                        </Text>
+
+                        {isPendiente && esJefeDeHogar ? (
+                          <View style={styles.valBtnsRow}>
+                            <Pressable
+                              onPress={() => validarGasto(g.id_gasto)}
+                              style={[styles.valCircleBtn, { backgroundColor: colors.success }]}
+                            >
+                              <Ionicons name="checkmark" size={14} color="#FFFFFF" />
+                            </Pressable>
+                            <Pressable
+                              onPress={() => rechazarGasto(g.id_gasto)}
+                              style={[styles.valCircleBtn, { backgroundColor: colors.danger + '22' }]}
+                            >
+                              <Ionicons name="close" size={14} color={colors.danger} />
+                            </Pressable>
+                          </View>
+                        ) : puedeBorrar ? (
+                          <Pressable
+                            onPress={() => eliminarGasto(g.id_gasto)}
+                            style={styles.gastoDelete}
+                          >
+                            <Ionicons name="trash-outline" size={16} color={colors.textSecondary} />
+                          </Pressable>
+                        ) : null}
+                      </View>
                     </View>
-
-                    <View style={styles.gastoInfo}>
-                      <Text style={[styles.gastoConcepto, { color: colors.textPrimary }]}>
-                        {g.concepto}
-                      </Text>
-                      <Text style={[styles.gastoMeta, { color: colors.textSecondary }]}>
-                        {fechaStr} • Pagado por {g.registrador?.nombre ?? 'Miembro'}
-                      </Text>
-                    </View>
-
-                    <View style={styles.gastoRight}>
-                      <Text style={[styles.gastoMonto, { color: colors.textPrimary }]}>
-                        {formatearCLP(g.monto)}
-                      </Text>
-                      <Pressable onPress={() => eliminarGasto(g.id_gasto)} style={styles.gastoDelete}>
-                        <Ionicons name="trash-outline" size={16} color={colors.textSecondary} />
-                      </Pressable>
-                    </View>
-                  </View>
-                </AppCard>
-              );
-            })}
+                  </AppCard>
+                );
+              })
+            )}
           </ScrollView>
         ) : (
-          /* Vista: Participación y Puntos (Alcance Funcional y Ponderación por Disponibilidad) */
-          <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-            {/* Tarjeta Hero de Puntos Acumulados */}
+          <ScrollView
+            contentContainerStyle={styles.scrollContent}
+            showsVerticalScrollIndicator={false}
+            refreshControl={
+              <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={colors.primary} />
+            }
+          >
             <AppCard style={styles.heroCard}>
               <View style={styles.heroRow}>
                 <View>
-                  <Text style={[styles.heroLabel, { color: colors.textSecondary }]}>Puntos Totales de la Casa</Text>
+                  <Text style={[styles.heroLabel, { color: colors.textSecondary }]}>
+                    Puntos Totales Validados
+                  </Text>
                   <Text style={[styles.heroAmount, { color: colors.textPrimary }]}>
                     {totalPuntosHogar} pts
                   </Text>
@@ -201,7 +305,11 @@ export function GastosPage() {
                   </Text>
                 </View>
                 <View style={[styles.heroIconBadge, { backgroundColor: colors.secondary }]}>
-                  <Ionicons name="trophy-outline" size={30} color={colors.onHighlight ?? colors.textPrimary} />
+                  <Ionicons
+                    name="trophy-outline"
+                    size={30}
+                    color={colors.onHighlight ?? colors.textPrimary}
+                  />
                 </View>
               </View>
             </AppCard>
@@ -212,22 +320,24 @@ export function GastosPage() {
 
             {participacion.map((p) => {
               const dispColor = getDisponibilidadColor(p.disponibilidad);
-
               return (
                 <AppCard key={p.id_usuario} style={styles.partCard}>
                   <View style={styles.partTop}>
                     <View style={styles.partLeft}>
                       <View style={[styles.avatar, { backgroundColor: colors.primary }]}>
-                        <Text style={[styles.avatarText, { color: colors.onPrimary ?? '#FFFFFF' }]}>
+                        <Text style={[styles.avatarText, { color: '#FFFFFF' }]}>
                           {getIniciales(p.nombre)}
                         </Text>
                       </View>
                       <View>
-                        <Text style={[styles.partName, { color: colors.textPrimary }]}>{p.nombre}</Text>
+                        <Text style={[styles.partName, { color: colors.textPrimary }]}>
+                          {p.nombre}
+                        </Text>
                         <View style={styles.dispRow}>
                           <View style={[styles.dot, { backgroundColor: dispColor }]} />
                           <Text style={[styles.dispLabel, { color: colors.textSecondary }]}>
-                            {p.disponibilidad} {p.descripcion_carga ? `• ${p.descripcion_carga}` : ''}
+                            {p.disponibilidad}
+                            {p.descripcion_carga ? ` • ${p.descripcion_carga}` : ''}
                           </Text>
                         </View>
                       </View>
@@ -238,12 +348,11 @@ export function GastosPage() {
                         {p.puntos} pts
                       </Text>
                       <Text style={[styles.tasksValue, { color: colors.textSecondary }]}>
-                        {p.tareasCompletadas} tareas
+                        {p.tareasCompletadas} validadas
                       </Text>
                     </View>
                   </View>
 
-                  {/* Barra de progreso de participación */}
                   <View style={styles.progressContainer}>
                     <View style={[styles.progressBarBg, { backgroundColor: colors.softBg }]}>
                       <View
@@ -267,7 +376,6 @@ export function GastosPage() {
         )}
       </View>
 
-      {/* Modal Ingresar Gasto */}
       <Modal
         visible={modalGastoVisible}
         transparent
@@ -277,7 +385,11 @@ export function GastosPage() {
         <View style={[styles.modalOverlay, { backgroundColor: colors.overlay }]}>
           <View style={[styles.modalContent, { backgroundColor: colors.surface, borderColor: colors.border }]}>
             <View style={styles.modalHeader}>
-              <Text style={[styles.modalTitle, { color: colors.textPrimary }]}>Ingresar Gasto del Hogar</Text>
+              <Text style={[styles.modalTitle, { color: colors.textPrimary }]}>
+                {esHogarConJefe && !esJefeDeHogar
+                  ? 'Informar Gasto (Para Validar)'
+                  : 'Ingresar Gasto del Hogar'}
+              </Text>
               <Pressable
                 onPress={() => setModalGastoVisible(false)}
                 style={[styles.modalClose, { backgroundColor: colors.softBg }]}
@@ -286,9 +398,15 @@ export function GastosPage() {
               </Pressable>
             </View>
 
+            {esHogarConJefe && !esJefeDeHogar && (
+              <Text style={[styles.modalNotice, { color: colors.warning }]}>
+                El Jefe de Hogar recibirá este registro para aprobarlo en el total mensual.
+              </Text>
+            )}
+
             <AppInput
               label="Concepto del Gasto"
-              placeholder="Ej: Arriendo, Supermercado, Luz, Agua"
+              placeholder="Ej: Panadería, Supermercado, Luz, Agua"
               value={concepto}
               onChangeText={setConcepto}
               icon="receipt-outline"
@@ -296,7 +414,7 @@ export function GastosPage() {
 
             <AppInput
               label="Monto en pesos (CLP)"
-              placeholder="Ej: 45000"
+              placeholder="Ej: 15000"
               value={monto}
               onChangeText={setMonto}
               keyboardType="numeric"
@@ -305,7 +423,7 @@ export function GastosPage() {
 
             <View style={styles.modalActions}>
               <AppButton
-                title="Registrar Gasto"
+                title={esHogarConJefe && !esJefeDeHogar ? 'Enviar a Validar' : 'Registrar Gasto'}
                 onPress={handleCrearGasto}
                 loading={loading}
               />
@@ -313,12 +431,12 @@ export function GastosPage() {
           </View>
         </View>
       </Modal>
-    </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: {
+  root: {
     flex: 1,
   },
   container: {
@@ -339,7 +457,7 @@ const styles = StyleSheet.create({
   },
   title: {
     fontFamily: fonts.bold,
-    fontSize: 24,
+    fontSize: 22,
     marginTop: 2,
   },
   addBtn: {
@@ -376,9 +494,9 @@ const styles = StyleSheet.create({
     fontSize: 12,
   },
   heroIconBadge: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
+    width: 58,
+    height: 58,
+    borderRadius: 29,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -390,6 +508,15 @@ const styles = StyleSheet.create({
     fontSize: 17,
     marginBottom: spacing.md,
   },
+  emptyCard: {
+    alignItems: 'center',
+    paddingVertical: 30,
+    gap: 8,
+  },
+  emptyText: {
+    fontFamily: fonts.regular,
+    fontSize: 13,
+  },
   gastoCard: {
     padding: spacing.md,
     marginBottom: spacing.sm,
@@ -400,9 +527,9 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   gastoIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 42,
+    height: 42,
+    borderRadius: 21,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -418,13 +545,30 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 2,
   },
+  pendingTagText: {
+    fontFamily: fonts.semibold,
+    fontSize: 11,
+    marginTop: 3,
+  },
   gastoRight: {
     alignItems: 'flex-end',
-    gap: 4,
+    gap: 6,
   },
   gastoMonto: {
     fontFamily: fonts.bold,
     fontSize: 15,
+  },
+  valBtnsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  valCircleBtn: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   gastoDelete: {
     padding: 2,
@@ -519,11 +663,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: spacing.md,
+    marginBottom: spacing.sm,
   },
   modalTitle: {
     fontFamily: fonts.bold,
-    fontSize: 18,
+    fontSize: 17,
+    flex: 1,
   },
   modalClose: {
     width: 32,
@@ -531,6 +676,12 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  modalNotice: {
+    fontFamily: fonts.medium,
+    fontSize: 12,
+    marginBottom: spacing.md,
+    lineHeight: 17,
   },
   modalActions: {
     marginTop: spacing.md,

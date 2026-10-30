@@ -1,17 +1,15 @@
 import React, { useMemo, useState } from 'react';
 import {
-  FlatList,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { AppButton } from '../components/AppButton';
 import { AppCard } from '../components/AppCard';
 import { SegmentedControl } from '../components/SegmentedControl';
 import { useAuth } from '../context/AuthContext';
@@ -25,18 +23,41 @@ type VistaTareas = 'persona' | 'calendario';
 export function TareasPage() {
   const { colors, theme } = useTheme();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const { tareas, hogar, toggleTarea } = useAuth();
+  const {
+    tareas,
+    hogar,
+    usuario,
+    esJefeDeHogar,
+    esHogarConJefe,
+    puedeValidarTareas,
+    puedeCrearTareasDirecto,
+    toggleTarea,
+    validarTarea,
+    rechazarTarea,
+    eliminarTarea,
+    recargarDatos,
+  } = useAuth();
 
   const [vista, setVista] = useState<VistaTareas>('persona');
-  const [diaSeleccionadoIndex, setDiaSeleccionadoIndex] = useState(0);
+  const [diaSeleccionadoIndex, setDiaSeleccionadoIndex] = useState(1);
+  const [refreshing, setRefreshing] = useState(false);
 
-  // Generar 7 días para la vista de calendario
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try {
+      await recargarDatos();
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  // Generar 7 días (ayer, hoy y 5 días adelante)
   const diasSemana = useMemo(() => {
     const hoy = new Date();
     const nombresDias = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
     return Array.from({ length: 7 }, (_, i) => {
       const d = new Date(hoy);
-      d.setDate(hoy.getDate() + (i - 1)); // de ayer a 5 días adelante
+      d.setDate(hoy.getDate() + (i - 1));
       return {
         index: i,
         fecha: d,
@@ -48,19 +69,19 @@ export function TareasPage() {
     });
   }, []);
 
-  // Agrupar tareas por miembro asignado para la Vista 5.1
   const miembrosConTareas = useMemo(() => {
     const miembros = hogar?.miembros ?? [];
-    return miembros.map((m) => {
-      const tareasAsignadas = tareas.filter((t) => t.id_asignado === m.id_usuario);
-      return {
-        miembro: m,
-        tareas: tareasAsignadas,
-      };
-    });
+    return miembros.map((m) => ({
+      miembro: m,
+      tareas: tareas.filter((t) => t.id_asignado === m.id_usuario),
+    }));
   }, [hogar, tareas]);
 
-  // Tareas para el día seleccionado en el Calendario
+  const tareasSinAsignar = useMemo(
+    () => tareas.filter((t) => !t.id_asignado),
+    [tareas],
+  );
+
   const tareasDelDia = useMemo(() => {
     const diaActual = diasSemana[diaSeleccionadoIndex];
     if (!diaActual) return [];
@@ -80,14 +101,196 @@ export function TareasPage() {
       .toUpperCase();
   };
 
+  const pendientesCount = tareas.filter((t) => t.estado === 'PENDIENTE').length;
+  const revisionCount = tareas.filter(
+    (t) => t.estado === 'POR_VALIDAR' || t.estado === 'PROPUESTA',
+  ).length;
+
+  const renderControlesTarea = (tarea: Tarea, compact = false) => {
+    if (tarea.estado === 'PROPUESTA') {
+      if (puedeValidarTareas) {
+        return (
+          <View style={styles.dualBtnRow}>
+            <Pressable
+              onPress={() => validarTarea(tarea.id_tarea)}
+              style={[styles.actionBtn, { backgroundColor: colors.success }]}
+            >
+              <Ionicons name="checkmark" size={14} color="#FFFFFF" />
+              <Text style={styles.actionBtnText}>Aprobar</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => rechazarTarea(tarea.id_tarea)}
+              style={[styles.iconRejectBtn, { backgroundColor: colors.danger + '22' }]}
+            >
+              <Ionicons name="close" size={15} color={colors.danger} />
+            </Pressable>
+          </View>
+        );
+      }
+      return (
+        <View style={[styles.waitingPill, { backgroundColor: colors.warning + '20' }]}>
+          <Ionicons name="time-outline" size={13} color={colors.warning} />
+          <Text style={[styles.waitingText, { color: colors.warning }]}>Propuesta enviada</Text>
+        </View>
+      );
+    }
+
+    if (tarea.estado === 'POR_VALIDAR') {
+      if (puedeValidarTareas) {
+        return (
+          <View style={styles.dualBtnRow}>
+            <Pressable
+              onPress={() => validarTarea(tarea.id_tarea)}
+              style={[styles.actionBtn, { backgroundColor: colors.warning }]}
+            >
+              <Ionicons name="shield-checkmark" size={14} color="#FFFFFF" />
+              <Text style={styles.actionBtnText}>Validar</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => rechazarTarea(tarea.id_tarea)}
+              style={[styles.iconRejectBtn, { backgroundColor: colors.danger + '22' }]}
+            >
+              <Ionicons name="arrow-undo" size={14} color={colors.danger} />
+            </Pressable>
+          </View>
+        );
+      }
+
+      const fuiYo = tarea.id_completador === usuario?.id_usuario;
+      return (
+        <Pressable
+          disabled={!fuiYo}
+          onPress={() => toggleTarea(tarea.id_tarea)}
+          style={[styles.waitingPill, { backgroundColor: colors.warning + '22' }]}
+        >
+          <Ionicons name="hourglass-outline" size={13} color={colors.warning} />
+          <Text style={[styles.waitingText, { color: colors.warning }]}>
+            {fuiYo ? 'Por validar (Cancelar)' : 'Esperando al Jefe'}
+          </Text>
+        </Pressable>
+      );
+    }
+
+    if (tarea.estado === 'COMPLETADA') {
+      return (
+        <Pressable
+          disabled={!puedeValidarTareas}
+          onPress={() => toggleTarea(tarea.id_tarea)}
+          style={[styles.actionBtn, { backgroundColor: colors.success }]}
+        >
+          <Ionicons name="checkmark-circle" size={15} color="#FFFFFF" />
+          <Text style={styles.actionBtnText}>
+            {compact ? 'Validada' : puedeValidarTareas ? 'Validada (Reabrir)' : 'Validada'}
+          </Text>
+        </Pressable>
+      );
+    }
+
+    // PENDIENTE
+    return (
+      <Pressable
+        onPress={() => toggleTarea(tarea.id_tarea)}
+        style={[
+          styles.actionBtn,
+          { backgroundColor: puedeValidarTareas ? colors.primary : colors.secondary },
+        ]}
+      >
+        <Ionicons
+          name={puedeValidarTareas ? 'checkmark-outline' : 'paper-plane-outline'}
+          size={15}
+          color="#FFFFFF"
+        />
+        <Text style={styles.actionBtnText}>
+          {puedeValidarTareas ? 'Completar' : 'Enviar a Validar'}
+        </Text>
+      </Pressable>
+    );
+  };
+
+  const renderTarjetaCuadrada = (tarea: Tarea) => {
+    const isDone = tarea.estado === 'COMPLETADA';
+    const isPorValidar = tarea.estado === 'POR_VALIDAR';
+    const isPropuesta = tarea.estado === 'PROPUESTA';
+    const puedeBorrar = esJefeDeHogar || (!esHogarConJefe && tarea.id_creador === usuario?.id_usuario);
+
+    return (
+      <View
+        key={tarea.id_tarea}
+        style={[
+          styles.squareTaskCard,
+          {
+            backgroundColor: isDone ? colors.softBg : colors.card,
+            borderColor: isDone
+              ? colors.success
+              : isPorValidar || isPropuesta
+              ? colors.warning
+              : colors.border,
+            ...shadow(theme.isDark, isDone ? 1 : 2),
+          },
+        ]}
+      >
+        <View style={styles.cardTop}>
+          <View style={[styles.scoreBadge, { backgroundColor: colors.secondary + '25' }]}>
+            <Text style={[styles.scoreText, { color: colors.primary }]}>+{tarea.puntos} pts</Text>
+          </View>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            {tarea.categoria && (
+              <Text style={[styles.catTag, { color: colors.textSecondary }]}>
+                {tarea.categoria.nombre}
+              </Text>
+            )}
+            {puedeBorrar && (
+              <Pressable onPress={() => eliminarTarea(tarea.id_tarea)} hitSlop={6}>
+                <Ionicons name="trash-outline" size={14} color={colors.textSecondary} />
+              </Pressable>
+            )}
+          </View>
+        </View>
+
+        <Text
+          numberOfLines={2}
+          style={[
+            styles.taskTitle,
+            {
+              color: colors.textPrimary,
+              textDecorationLine: isDone ? 'line-through' : 'none',
+            },
+          ]}
+        >
+          {tarea.titulo}
+        </Text>
+
+        {isPorValidar && (
+          <Text numberOfLines={1} style={[styles.stateInfoText, { color: colors.warning }]}>
+            Hecha por {tarea.completador?.nombre ?? 'integrante'} • Falta Jefe
+          </Text>
+        )}
+        {isPropuesta && (
+          <Text numberOfLines={1} style={[styles.stateInfoText, { color: colors.secondary }]}>
+            Propuesta por {tarea.creador?.nombre ?? 'integrante'}
+          </Text>
+        )}
+
+        {tarea.descripcion ? (
+          <Text numberOfLines={2} style={[styles.taskDesc, { color: colors.textSecondary }]}>
+            {tarea.descripcion}
+          </Text>
+        ) : null}
+
+        <View style={styles.cardBottom}>{renderControlesTarea(tarea, true)}</View>
+      </View>
+    );
+  };
+
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
+    <View style={[styles.root, { backgroundColor: colors.background }]}>
       <View style={styles.container}>
-        {/* Header: Título "Lista de Tareas" y botón "+" */}
+        {/* Header */}
         <View style={styles.header}>
-          <View>
+          <View style={{ flex: 1 }}>
             <Text style={[styles.subTag, { color: colors.secondary }]}>
-              {tareas.filter((t) => t.estado === 'PENDIENTE').length} pendientes
+              {pendientesCount} pendientes
+              {revisionCount > 0 ? ` • ${revisionCount} por validar` : ''}
             </Text>
             <Text style={[styles.title, { color: colors.textPrimary }]}>Lista de Tareas</Text>
           </View>
@@ -103,11 +306,14 @@ export function TareasPage() {
               pressed && { opacity: 0.8, transform: [{ scale: 0.95 }] },
             ]}
           >
-            <Ionicons name="add" size={26} color={colors.onPrimary ?? '#FFFFFF'} />
+            <Ionicons
+              name={puedeCrearTareasDirecto ? 'add' : 'bulb-outline'}
+              size={24}
+              color={colors.onPrimary ?? '#FFFFFF'}
+            />
           </Pressable>
         </View>
 
-        {/* Segmented Control: "Por Persona" y "Calendario" */}
         <SegmentedControl
           values={[
             { key: 'persona', label: 'Por Persona' },
@@ -117,18 +323,51 @@ export function TareasPage() {
           onChange={setVista}
         />
 
-        {/* Vista 5.1: Por Persona */}
         {vista === 'persona' ? (
-          <ScrollView contentContainerStyle={styles.scrollList} showsVerticalScrollIndicator={false}>
+          <ScrollView
+            contentContainerStyle={styles.scrollList}
+            showsVerticalScrollIndicator={false}
+            refreshControl={
+              <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={colors.primary} />
+            }
+          >
+            {tareasSinAsignar.length > 0 && (
+              <View style={styles.memberSection}>
+                <View style={styles.memberHeader}>
+                  <View style={[styles.avatar, { backgroundColor: colors.secondary }]}>
+                    <Ionicons name="people" size={18} color="#FFFFFF" />
+                  </View>
+                  <View style={styles.memberTextCol}>
+                    <Text style={[styles.memberName, { color: colors.textPrimary }]}>
+                       Abiertas / Propuestas del Hogar
+                    </Text>
+                    <Text style={[styles.memberRole, { color: colors.textSecondary }]}>
+                      {tareasSinAsignar.length} tareas sin integrante fijo
+                    </Text>
+                  </View>
+                </View>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.horizontalTasks}
+                >
+                  {tareasSinAsignar.map((t) => renderTarjetaCuadrada(t))}
+                </ScrollView>
+              </View>
+            )}
+
             {miembrosConTareas.map(({ miembro, tareas: listaTareas }) => {
               const isAdmin = miembro.rol === 'ADMINISTRADOR';
-
               return (
                 <View key={miembro.id_miembro} style={styles.memberSection}>
-                  {/* Fila del integrante */}
                   <View style={styles.memberHeader}>
-                    <View style={[styles.avatar, { backgroundColor: colors.primary }]}>
-                      <Text style={[styles.avatarText, { color: colors.onPrimary ?? '#FFFFFF' }]}>
+                    <View
+                      style={[
+                        styles.avatar,
+                        { backgroundColor: isAdmin ? colors.primary : colors.secondary },
+                      ]}
+                    >
+                      <Text style={[styles.avatarText, { color: '#FFFFFF' }]}>
                         {getIniciales(miembro.usuario.nombre)}
                       </Text>
                     </View>
@@ -137,90 +376,29 @@ export function TareasPage() {
                         {miembro.usuario.nombre}
                       </Text>
                       <Text style={[styles.memberRole, { color: colors.textSecondary }]}>
-                        {isAdmin ? 'Administrador' : 'Miembro'} • {listaTareas.length} tareas asignadas
+                        {isAdmin ? 'Jefe de Hogar' : 'Integrante'} • {listaTareas.length} tareas
                       </Text>
                     </View>
                   </View>
 
-                  {/* Tarjetas cuadradas horizontales con puntaje y botón para completar */}
                   {listaTareas.length === 0 ? (
-                    <View style={[styles.emptyTaskBox, { backgroundColor: colors.softBg, borderColor: colors.border }]}>
+                    <View
+                      style={[
+                        styles.emptyTaskBox,
+                        { backgroundColor: colors.softBg, borderColor: colors.border },
+                      ]}
+                    >
                       <Text style={[styles.emptyTaskText, { color: colors.textSecondary }]}>
-                        Sin tareas pendientes asignadas
+                        Sin tareas asignadas actualmente
                       </Text>
                     </View>
                   ) : (
-                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.horizontalTasks}>
-                      {listaTareas.map((tarea) => {
-                        const isDone = tarea.estado === 'COMPLETADA';
-
-                        return (
-                          <View
-                            key={tarea.id_tarea}
-                            style={[
-                              styles.squareTaskCard,
-                              {
-                                backgroundColor: isDone ? colors.softBg : colors.card,
-                                borderColor: isDone ? colors.success : colors.border,
-                                ...shadow(theme.isDark, isDone ? 1 : 2),
-                              },
-                            ]}
-                          >
-                            <View style={styles.cardTop}>
-                              <View style={[styles.scoreBadge, { backgroundColor: colors.secondary + '25' }]}>
-                                <Text style={[styles.scoreText, { color: colors.primary }]}>
-                                  +{tarea.puntos} pts
-                                </Text>
-                              </View>
-                              {tarea.categoria && (
-                                <Text style={[styles.catTag, { color: colors.textSecondary }]}>
-                                  {tarea.categoria.nombre}
-                                </Text>
-                              )}
-                            </View>
-
-                            <Text
-                              numberOfLines={2}
-                              style={[
-                                styles.taskTitle,
-                                {
-                                  color: colors.textPrimary,
-                                  textDecorationLine: isDone ? 'line-through' : 'none',
-                                },
-                              ]}
-                            >
-                              {tarea.titulo}
-                            </Text>
-
-                            {tarea.descripcion ? (
-                              <Text numberOfLines={2} style={[styles.taskDesc, { color: colors.textSecondary }]}>
-                                {tarea.descripcion}
-                              </Text>
-                            ) : null}
-
-                            <View style={styles.cardBottom}>
-                              <Pressable
-                                onPress={() => toggleTarea(tarea.id_tarea)}
-                                style={[
-                                  styles.actionBtn,
-                                  {
-                                    backgroundColor: isDone ? colors.success : colors.primary,
-                                  },
-                                ]}
-                              >
-                                <Ionicons
-                                  name={isDone ? 'checkmark-circle' : 'checkmark-outline'}
-                                  size={16}
-                                  color="#FFFFFF"
-                                />
-                                <Text style={styles.actionBtnText}>
-                                  {isDone ? 'Lista' : 'Completar'}
-                                </Text>
-                              </Pressable>
-                            </View>
-                          </View>
-                        );
-                      })}
+                    <ScrollView
+                      horizontal
+                      showsHorizontalScrollIndicator={false}
+                      contentContainerStyle={styles.horizontalTasks}
+                    >
+                      {listaTareas.map((t) => renderTarjetaCuadrada(t))}
                     </ScrollView>
                   )}
                 </View>
@@ -228,9 +406,13 @@ export function TareasPage() {
             })}
           </ScrollView>
         ) : (
-          /* Vista 5.2: Calendario */
-          <ScrollView contentContainerStyle={styles.scrollCalendar} showsVerticalScrollIndicator={false}>
-            {/* Grilla de calendario semanal */}
+          <ScrollView
+            contentContainerStyle={styles.scrollCalendar}
+            showsVerticalScrollIndicator={false}
+            refreshControl={
+              <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={colors.primary} />
+            }
+          >
             <View style={[styles.calendarGrid, { backgroundColor: colors.card, borderColor: colors.border }]}>
               <View style={styles.calendarRow}>
                 {diasSemana.map((dia) => {
@@ -239,7 +421,7 @@ export function TareasPage() {
                     if (!t.fecha_limite) return dia.esHoy;
                     return t.fecha_limite.startsWith(dia.isoDateStr);
                   });
-                  const tienePendientes = tareasEnEsteDia.some((t) => t.estado === 'PENDIENTE');
+                  const tienePendientes = tareasEnEsteDia.some((t) => t.estado !== 'COMPLETADA');
 
                   return (
                     <Pressable
@@ -256,7 +438,7 @@ export function TareasPage() {
                       <Text
                         style={[
                           styles.dayName,
-                          { color: isSelected ? (colors.onPrimary ?? '#FFFFFF') : colors.textSecondary },
+                          { color: isSelected ? '#FFFFFF' : colors.textSecondary },
                         ]}
                       >
                         {dia.diaNombre}
@@ -264,13 +446,11 @@ export function TareasPage() {
                       <Text
                         style={[
                           styles.dayNum,
-                          { color: isSelected ? (colors.onPrimary ?? '#FFFFFF') : colors.textPrimary },
+                          { color: isSelected ? '#FFFFFF' : colors.textPrimary },
                         ]}
                       >
                         {dia.numero}
                       </Text>
-
-                      {/* Bloque / Punto de tareas coloreado */}
                       <View style={styles.dotsRow}>
                         {tareasEnEsteDia.slice(0, 3).map((_, i) => (
                           <View
@@ -294,10 +474,9 @@ export function TareasPage() {
               </View>
             </View>
 
-            {/* Tarjeta Inferior de "Detalles" del día seleccionado */}
             <View style={styles.detailsHeader}>
               <Text style={[styles.detailsSectionTitle, { color: colors.textPrimary }]}>
-                Detalles del Día ({diasSemana[diaSeleccionadoIndex]?.diaNombre}{' '}
+                Detalles ({diasSemana[diaSeleccionadoIndex]?.diaNombre}{' '}
                 {diasSemana[diaSeleccionadoIndex]?.numero})
               </Text>
               <Text style={[styles.detailsCount, { color: colors.textSecondary }]}>
@@ -315,13 +494,21 @@ export function TareasPage() {
             ) : (
               tareasDelDia.map((tarea) => {
                 const isDone = tarea.estado === 'COMPLETADA';
+                const statusBadgeConfig =
+                  tarea.estado === 'COMPLETADA'
+                    ? { label: 'Validada', bg: colors.success + '22', fg: colors.success }
+                    : tarea.estado === 'POR_VALIDAR'
+                    ? { label: 'Por Validar (Jefe)', bg: colors.warning + '24', fg: colors.warning }
+                    : tarea.estado === 'PROPUESTA'
+                    ? { label: 'Propuesta', bg: colors.secondary + '24', fg: colors.secondary }
+                    : { label: 'Pendiente', bg: colors.primary + '18', fg: colors.primary };
+
                 return (
                   <AppCard key={tarea.id_tarea} style={styles.detailCard}>
                     <View style={styles.detailTop}>
-                      {/* Miembro Responsable */}
                       <View style={styles.responsibleRow}>
                         <View style={[styles.miniAvatar, { backgroundColor: colors.primary }]}>
-                          <Text style={[styles.miniAvatarText, { color: colors.onPrimary ?? '#FFFFFF' }]}>
+                          <Text style={[styles.miniAvatarText, { color: '#FFFFFF' }]}>
                             {getIniciales(tarea.asignado?.nombre)}
                           </Text>
                         </View>
@@ -342,7 +529,6 @@ export function TareasPage() {
                       </View>
                     </View>
 
-                    {/* Información Tarea */}
                     <Text
                       style={[
                         styles.detailTitle,
@@ -362,33 +548,13 @@ export function TareasPage() {
                     ) : null}
 
                     <View style={styles.detailBottom}>
-                      <View style={[styles.statusBadge, { backgroundColor: isDone ? colors.success + '22' : colors.warning + '22' }]}>
-                        <Text style={[styles.statusText, { color: isDone ? colors.success : colors.warning }]}>
-                          {isDone ? 'Completada' : 'Pendiente'}
+                      <View style={[styles.statusBadge, { backgroundColor: statusBadgeConfig.bg }]}>
+                        <Text style={[styles.statusText, { color: statusBadgeConfig.fg }]}>
+                          {statusBadgeConfig.label}
                         </Text>
                       </View>
 
-                      <Pressable
-                        onPress={() => toggleTarea(tarea.id_tarea)}
-                        style={[
-                          styles.toggleBtn,
-                          { backgroundColor: isDone ? colors.softBg : colors.primary },
-                        ]}
-                      >
-                        <Ionicons
-                          name={isDone ? 'refresh-outline' : 'checkmark-outline'}
-                          size={16}
-                          color={isDone ? colors.textPrimary : '#FFFFFF'}
-                        />
-                        <Text
-                          style={[
-                            styles.toggleBtnText,
-                            { color: isDone ? colors.textPrimary : '#FFFFFF' },
-                          ]}
-                        >
-                          {isDone ? 'Reabrir' : 'Completar'}
-                        </Text>
-                      </Pressable>
+                      {renderControlesTarea(tarea, false)}
                     </View>
                   </AppCard>
                 );
@@ -397,12 +563,12 @@ export function TareasPage() {
           </ScrollView>
         )}
       </View>
-    </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: {
+  root: {
     flex: 1,
   },
   container: {
@@ -423,7 +589,7 @@ const styles = StyleSheet.create({
   },
   title: {
     fontFamily: fonts.bold,
-    fontSize: 24,
+    fontSize: 22,
     marginTop: 2,
   },
   addBtn: {
@@ -446,22 +612,22 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
   },
   avatar: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
   },
   avatarText: {
     fontFamily: fonts.bold,
-    fontSize: 15,
+    fontSize: 14,
   },
   memberTextCol: {
     flex: 1,
   },
   memberName: {
     fontFamily: fonts.bold,
-    fontSize: 16,
+    fontSize: 15,
   },
   memberRole: {
     fontFamily: fonts.regular,
@@ -482,18 +648,18 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   squareTaskCard: {
-    width: 210,
-    minHeight: 165,
+    width: 220,
+    minHeight: 175,
     borderRadius: radius.lg,
     padding: spacing.md,
-    borderWidth: 1.2,
+    borderWidth: 1.3,
     justifyContent: 'space-between',
   },
   cardTop: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 8,
+    marginBottom: 6,
   },
   scoreBadge: {
     paddingHorizontal: 8,
@@ -514,6 +680,11 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     marginBottom: 4,
   },
+  stateInfoText: {
+    fontFamily: fonts.semibold,
+    fontSize: 11,
+    marginBottom: 4,
+  },
   taskDesc: {
     fontFamily: fonts.regular,
     fontSize: 12,
@@ -524,11 +695,16 @@ const styles = StyleSheet.create({
     marginTop: 10,
     alignItems: 'flex-end',
   },
-  actionBtn: {
+  dualBtnRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    paddingHorizontal: 12,
+  },
+  actionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 11,
     paddingVertical: 6,
     borderRadius: radius.pill,
   },
@@ -536,6 +712,25 @@ const styles = StyleSheet.create({
     fontFamily: fonts.semibold,
     fontSize: 12,
     color: '#FFFFFF',
+  },
+  iconRejectBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  waitingPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+  },
+  waitingText: {
+    fontFamily: fonts.semibold,
+    fontSize: 11,
   },
   scrollCalendar: {
     paddingBottom: 32,
@@ -660,17 +855,5 @@ const styles = StyleSheet.create({
   statusText: {
     fontFamily: fonts.semibold,
     fontSize: 12,
-  },
-  toggleBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: radius.pill,
-  },
-  toggleBtnText: {
-    fontFamily: fonts.semibold,
-    fontSize: 13,
   },
 });

@@ -1,15 +1,16 @@
 import React, { useState } from 'react';
 import {
+  Alert,
   FlatList,
   Modal,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { AppButton } from '../components/AppButton';
 import { AppCard } from '../components/AppCard';
@@ -17,22 +18,43 @@ import { AppInput } from '../components/AppInput';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../theme/ThemeContext';
 import { fonts, radius, shadow, spacing } from '../theme/tokens';
-import { ItemCompra } from '../types';
 
 export function ComprasCompartidasPage() {
   const { colors, theme } = useTheme();
-  const { compras, categorias, toggleCompra, agregarCompra, eliminarCompra, limpiarComprados } = useAuth();
+  const {
+    compras,
+    categorias,
+    usuario,
+    esJefeDeHogar,
+    puedeGestionarComprasDirecto,
+    toggleCompra,
+    validarCompra,
+    rechazarCompra,
+    agregarCompra,
+    eliminarCompra,
+    limpiarComprados,
+    agregarCategoriaCompra,
+    recargarDatos,
+  } = useAuth();
 
   const [categoriaFiltro, setCategoriaFiltro] = useState<number | 'TODAS'>('TODAS');
   const [nuevoNombre, setNuevoNombre] = useState('');
   const [nuevaCantidad, setNuevaCantidad] = useState('1');
   const [addCatModalVisible, setAddCatModalVisible] = useState(false);
   const [nombreNuevaCat, setNombreNuevaCat] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
 
-  // Filtrar categorías de compras
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try {
+      await recargarDatos();
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   const categoriasCompra = categorias.filter((c) => c.tipo === 'COMPRA');
 
-  // Filtrar items
   const itemsFiltrados = compras.filter((item) => {
     if (categoriaFiltro === 'TODAS') return true;
     return item.id_categoria === categoriaFiltro;
@@ -43,7 +65,10 @@ export function ComprasCompartidasPage() {
 
   const handleAgregarItem = () => {
     if (!nuevoNombre.trim()) return;
-    const catId = typeof categoriaFiltro === 'number' ? categoriaFiltro : (categoriasCompra[0]?.id_categoria ?? null);
+    const catId =
+      typeof categoriaFiltro === 'number'
+        ? categoriaFiltro
+        : categoriasCompra[0]?.id_categoria ?? null;
     agregarCompra({
       nombre: nuevoNombre.trim(),
       cantidad: nuevaCantidad.trim() || '1',
@@ -53,10 +78,20 @@ export function ComprasCompartidasPage() {
     setNuevaCantidad('1');
   };
 
+  const handleCrearCategoria = async () => {
+    if (!nombreNuevaCat.trim()) return;
+    try {
+      await agregarCategoriaCompra(nombreNuevaCat.trim());
+      setAddCatModalVisible(false);
+      setNombreNuevaCat('');
+    } catch (e: any) {
+      Alert.alert('Aviso', e?.message || 'No se pudo crear la categoría');
+    }
+  };
+
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
+    <View style={[styles.root, { backgroundColor: colors.background }]}>
       <View style={styles.container}>
-        {/* Header: Título "Listas de Compras" */}
         <View style={styles.header}>
           <View>
             <Text style={[styles.subtitle, { color: colors.secondary }]}>
@@ -65,7 +100,7 @@ export function ComprasCompartidasPage() {
             <Text style={[styles.title, { color: colors.textPrimary }]}>Listas de Compras</Text>
           </View>
 
-          {compradosCount > 0 && (
+          {compradosCount > 0 && puedeGestionarComprasDirecto && (
             <Pressable
               onPress={limpiarComprados}
               style={[styles.cleanBtn, { backgroundColor: colors.softBg, borderColor: colors.border }]}
@@ -76,10 +111,12 @@ export function ComprasCompartidasPage() {
           )}
         </View>
 
-        {/* Filtros Superiores: Chips Horizontales + Botón circular con icono de lápiz */}
         <View style={styles.chipsRow}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsScroll}>
-            {/* Chip "Todas" */}
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.chipsScroll}
+          >
             <Pressable
               onPress={() => setCategoriaFiltro('TODAS')}
               style={[
@@ -94,14 +131,18 @@ export function ComprasCompartidasPage() {
               <Text
                 style={[
                   styles.chipText,
-                  { color: categoriaFiltro === 'TODAS' ? (colors.onPrimary ?? '#FFFFFF') : colors.textPrimary },
+                  {
+                    color:
+                      categoriaFiltro === 'TODAS'
+                        ? (colors.onPrimary ?? '#FFFFFF')
+                        : colors.textPrimary,
+                  },
                 ]}
               >
                 Todas
               </Text>
             </Pressable>
 
-            {/* Chips por Categoría */}
             {categoriasCompra.map((cat) => {
               const isSelected = categoriaFiltro === cat.id_categoria;
               return (
@@ -120,7 +161,11 @@ export function ComprasCompartidasPage() {
                   <Text
                     style={[
                       styles.chipText,
-                      { color: isSelected ? (colors.onPrimary ?? '#FFFFFF') : colors.textPrimary },
+                      {
+                        color: isSelected
+                          ? (colors.onPrimary ?? '#FFFFFF')
+                          : colors.textPrimary,
+                      },
                     ]}
                   >
                     {cat.nombre}
@@ -129,20 +174,28 @@ export function ComprasCompartidasPage() {
               );
             })}
 
-            {/* Botón circular con icono de lápiz / agregar categoría */}
-            <Pressable
-              onPress={() => setAddCatModalVisible(true)}
-              style={[styles.pencilBtn, { backgroundColor: colors.surface, borderColor: colors.border }]}
-            >
-              <Ionicons name="pencil-outline" size={16} color={colors.primary} />
-            </Pressable>
+            {puedeGestionarComprasDirecto && (
+              <Pressable
+                onPress={() => setAddCatModalVisible(true)}
+                style={[
+                  styles.pencilBtn,
+                  { backgroundColor: colors.surface, borderColor: colors.border },
+                ]}
+              >
+                <Ionicons name="pencil-outline" size={16} color={colors.primary} />
+              </Pressable>
+            )}
           </ScrollView>
         </View>
 
-        {/* Barra de Entrada Rápida de Nuevos Productos */}
+        {/* Barra de Entrada Rápida */}
         <View style={[styles.quickAddBar, { backgroundColor: colors.card, borderColor: colors.border }]}>
           <TextInput
-            placeholder="¿Qué falta comprar hoy?"
+            placeholder={
+              puedeGestionarComprasDirecto
+                ? '¿Qué falta comprar hoy?'
+                : 'Solicitar producto al Jefe de Hogar...'
+            }
             placeholderTextColor={colors.textSecondary + '80'}
             value={nuevoNombre}
             onChangeText={setNuevoNombre}
@@ -164,19 +217,21 @@ export function ComprasCompartidasPage() {
             ]}
           >
             <Ionicons
-              name="add"
-              size={22}
+              name={puedeGestionarComprasDirecto ? 'add' : 'paper-plane-outline'}
+              size={20}
               color={nuevoNombre.trim() ? (colors.onPrimary ?? '#FFFFFF') : colors.textSecondary}
             />
           </Pressable>
         </View>
 
-        {/* Lista de Ítems */}
         <FlatList
           data={itemsFiltrados}
           keyExtractor={(item) => String(item.id_item)}
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={colors.primary} />
+          }
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
               <Ionicons name="cart-outline" size={48} color={colors.textSecondary + '60'} />
@@ -186,17 +241,29 @@ export function ComprasCompartidasPage() {
             </View>
           }
           renderItem={({ item }) => {
+            const isPendienteAprob = item.estado_validacion === 'PENDIENTE_APROBACION';
+            const isCompraPorValidar = item.estado_validacion === 'COMPRA_POR_VALIDAR';
+            const necesitaValidacion = isPendienteAprob || isCompraPorValidar;
+            const puedeEliminarEste =
+              puedeGestionarComprasDirecto ||
+              (isPendienteAprob && item.id_creador === usuario?.id_usuario);
+
             return (
               <AppCard
-                onPress={() => toggleCompra(item.id_item)}
+                onPress={() => {
+                  if (!isPendienteAprob) {
+                    toggleCompra(item.id_item);
+                  }
+                }}
                 style={{
                   ...styles.itemCard,
-                  opacity: item.comprado ? 0.65 : 1,
+                  opacity: item.comprado ? 0.68 : 1,
                   backgroundColor: item.comprado ? colors.softBg : colors.card,
+                  borderColor: necesitaValidacion ? colors.warning : colors.border,
+                  borderWidth: necesitaValidacion ? 1.3 : 1,
                 }}
               >
                 <View style={styles.itemRow}>
-                  {/* Izquierda: Nombre del producto y detalles */}
                   <View style={styles.itemLeft}>
                     <Text
                       style={[
@@ -209,6 +276,7 @@ export function ComprasCompartidasPage() {
                     >
                       {item.nombre}
                     </Text>
+
                     <View style={styles.itemMeta}>
                       {item.categoria && (
                         <Text style={[styles.itemCategory, { color: colors.secondary }]}>
@@ -216,36 +284,95 @@ export function ComprasCompartidasPage() {
                         </Text>
                       )}
                       <Text style={[styles.itemAuthor, { color: colors.textSecondary }]}>
-                        {item.comprado ? `Comprado por ${item.comprador?.nombre ?? 'miembro'}` : `Agregado por ${item.creador?.nombre ?? 'miembro'}`}
+                        {item.comprado
+                          ? `Comprado por ${item.comprador?.nombre ?? 'integrante'}`
+                          : isCompraPorValidar
+                          ? `Marcado comprado por ${item.comprador?.nombre ?? 'integrante'}`
+                          : `Por ${item.creador?.nombre ?? 'integrante'}`}
                       </Text>
                     </View>
+
+                    {necesitaValidacion && (
+                      <View
+                        style={[
+                          styles.valStatePill,
+                          { backgroundColor: colors.warning + '22' },
+                        ]}
+                      >
+                        <Ionicons name="shield-outline" size={12} color={colors.warning} />
+                        <Text style={[styles.valStateText, { color: colors.warning }]}>
+                          {isPendienteAprob
+                            ? 'Solicitud pendiente del Jefe de Hogar'
+                            : 'Compra por validar por Jefe de Hogar'}
+                        </Text>
+                      </View>
+                    )}
                   </View>
 
-                  {/* Derecha: Cantidad y Checkbox */}
                   <View style={styles.itemRight}>
-                    <View style={[styles.qtyBadge, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                      <Text style={[styles.qtyText, { color: colors.textPrimary }]}>{item.cantidad}</Text>
-                    </View>
-
-                    <Pressable
-                      onPress={() => toggleCompra(item.id_item)}
+                    <View
                       style={[
-                        styles.checkbox,
-                        {
-                          borderColor: item.comprado ? colors.success : colors.border,
-                          backgroundColor: item.comprado ? colors.success : 'transparent',
-                        },
+                        styles.qtyBadge,
+                        { backgroundColor: colors.surface, borderColor: colors.border },
                       ]}
                     >
-                      {item.comprado && <Ionicons name="checkmark" size={16} color="#FFFFFF" />}
-                    </Pressable>
+                      <Text style={[styles.qtyText, { color: colors.textPrimary }]}>
+                        {item.cantidad}
+                      </Text>
+                    </View>
 
-                    <Pressable
-                      onPress={() => eliminarCompra(item.id_item)}
-                      style={styles.deleteBtn}
-                    >
-                      <Ionicons name="close" size={18} color={colors.textSecondary} />
-                    </Pressable>
+                    {necesitaValidacion && (esJefeDeHogar || puedeGestionarComprasDirecto) ? (
+                      <View style={styles.valBtnsRow}>
+                        <Pressable
+                          onPress={() => validarCompra(item.id_item)}
+                          style={[styles.valCircleBtn, { backgroundColor: colors.success }]}
+                        >
+                          <Ionicons name="checkmark" size={15} color="#FFFFFF" />
+                        </Pressable>
+                        <Pressable
+                          onPress={() => rechazarCompra(item.id_item)}
+                          style={[styles.valCircleBtn, { backgroundColor: colors.danger + '22' }]}
+                        >
+                          <Ionicons name="close" size={15} color={colors.danger} />
+                        </Pressable>
+                      </View>
+                    ) : !isPendienteAprob ? (
+                      <Pressable
+                        onPress={() => toggleCompra(item.id_item)}
+                        style={[
+                          styles.checkbox,
+                          {
+                            borderColor: item.comprado
+                              ? colors.success
+                              : isCompraPorValidar
+                              ? colors.warning
+                              : colors.border,
+                            backgroundColor: item.comprado
+                              ? colors.success
+                              : isCompraPorValidar
+                              ? colors.warning
+                              : 'transparent',
+                          },
+                        ]}
+                      >
+                        {(item.comprado || isCompraPorValidar) && (
+                          <Ionicons
+                            name={item.comprado ? 'checkmark' : 'hourglass-outline'}
+                            size={15}
+                            color="#FFFFFF"
+                          />
+                        )}
+                      </Pressable>
+                    ) : null}
+
+                    {puedeEliminarEste && (
+                      <Pressable
+                        onPress={() => eliminarCompra(item.id_item)}
+                        style={styles.deleteBtn}
+                      >
+                        <Ionicons name="close" size={18} color={colors.textSecondary} />
+                      </Pressable>
+                    )}
                   </View>
                 </View>
               </AppCard>
@@ -254,7 +381,6 @@ export function ComprasCompartidasPage() {
         />
       </View>
 
-      {/* Modal para agregar categoría */}
       <Modal
         visible={addCatModalVisible}
         transparent
@@ -263,7 +389,9 @@ export function ComprasCompartidasPage() {
       >
         <View style={[styles.modalOverlay, { backgroundColor: colors.overlay }]}>
           <View style={[styles.modalContent, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-            <Text style={[styles.modalTitle, { color: colors.textPrimary }]}>Nueva Categoría de Compra</Text>
+            <Text style={[styles.modalTitle, { color: colors.textPrimary }]}>
+              Nueva Categoría de Compra
+            </Text>
             <AppInput
               label="Nombre de Categoría"
               placeholder="Ej: Verdulería, Panadería, Mascotas"
@@ -278,26 +406,17 @@ export function ComprasCompartidasPage() {
                 onPress={() => setAddCatModalVisible(false)}
                 style={{ flex: 1 }}
               />
-              <AppButton
-                title="Crear"
-                onPress={() => {
-                  if (nombreNuevaCat.trim()) {
-                    setAddCatModalVisible(false);
-                    setNombreNuevaCat('');
-                  }
-                }}
-                style={{ flex: 1 }}
-              />
+              <AppButton title="Crear" onPress={handleCrearCategoria} style={{ flex: 1 }} />
             </View>
           </View>
         </View>
       </Modal>
-    </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: {
+  root: {
     flex: 1,
   },
   container: {
@@ -318,7 +437,7 @@ const styles = StyleSheet.create({
   },
   title: {
     fontFamily: fonts.bold,
-    fontSize: 24,
+    fontSize: 22,
     marginTop: 2,
   },
   cleanBtn: {
@@ -376,7 +495,7 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   qtyInput: {
-    width: 60,
+    width: 58,
     fontFamily: fonts.medium,
     fontSize: 13,
     borderLeftWidth: 1,
@@ -413,6 +532,7 @@ const styles = StyleSheet.create({
   itemMeta: {
     flexDirection: 'row',
     alignItems: 'center',
+    flexWrap: 'wrap',
     gap: 4,
     marginTop: 4,
   },
@@ -424,10 +544,24 @@ const styles = StyleSheet.create({
     fontFamily: fonts.regular,
     fontSize: 11,
   },
+  valStatePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: radius.pill,
+    marginTop: 6,
+  },
+  valStateText: {
+    fontFamily: fonts.semibold,
+    fontSize: 10,
+  },
   itemRight: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 8,
   },
   qtyBadge: {
     paddingHorizontal: 8,
@@ -438,6 +572,18 @@ const styles = StyleSheet.create({
   qtyText: {
     fontFamily: fonts.medium,
     fontSize: 12,
+  },
+  valBtnsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  valCircleBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   checkbox: {
     width: 26,

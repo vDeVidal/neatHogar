@@ -22,28 +22,47 @@ import { RolMiembro } from '../types';
 export function AddMemberPage() {
   const { colors, theme } = useTheme();
   const navigation = useNavigation();
-  const { hogar, invitarMiembro } = useAuth();
+  const { hogar, esHogarConJefe, invitarMiembro } = useAuth();
 
   const [tipoMiembro, setTipoMiembro] = useState<RolMiembro>('MIEMBRO');
-  const [emailInvitado, setEmailInvitado] = useState('');
-  const [permisoCrearTareas, setPermisoCrearTareas] = useState(true);
-  const [permisoCompras, setPermisoCompras] = useState(true);
-  const [permisoNotificaciones, setPermisoNotificaciones] = useState(true);
+  const [nombreInvitado, setNombreInvitado] = useState('');
+  const [permisoValidarTareas, setPermisoValidarTareas] = useState(!esHogarConJefe);
+  const [permisoCrearTareas, setPermisoCrearTareas] = useState(!esHogarConJefe);
+  const [permisoCompras, setPermisoCompras] = useState(!esHogarConJefe);
   const [loading, setLoading] = useState(false);
-  const [invitacionEnviada, setInvitacionEnviada] = useState(false);
+
+  const seleccionarRol = (rol: RolMiembro) => {
+    setTipoMiembro(rol);
+    if (rol === 'ADMINISTRADOR') {
+      setPermisoValidarTareas(true);
+      setPermisoCrearTareas(true);
+      setPermisoCompras(true);
+    } else {
+      const porDefecto = !esHogarConJefe;
+      setPermisoValidarTareas(porDefecto);
+      setPermisoCrearTareas(porDefecto);
+      setPermisoCompras(porDefecto);
+    }
+  };
 
   const handleEnviar = async () => {
     setLoading(true);
     try {
-      await invitarMiembro(tipoMiembro);
-      setInvitacionEnviada(true);
+      const res = await invitarMiembro(tipoMiembro, {
+        puede_validar_tareas: tipoMiembro === 'ADMINISTRADOR' ? true : permisoValidarTareas,
+        puede_crear_tareas: tipoMiembro === 'ADMINISTRADOR' ? true : permisoCrearTareas,
+        puede_gestionar_compras: tipoMiembro === 'ADMINISTRADOR' ? true : permisoCompras,
+        nombre: nombreInvitado.trim() || undefined,
+      });
       Alert.alert(
-        '¡Invitación Generada!',
-        `Se ha habilitado el acceso con rol ${tipoMiembro}. Puedes compartir el código ${hogar?.codigo_invitacion} directamente.`,
+        '¡Acceso Listo!',
+        nombreInvitado.trim()
+          ? `Si "${nombreInvitado.trim()}" ya tenía cuenta se vinculó con sus permisos; si es nuevo, dile que abra NeatHogar, elija "Unirse a un Núcleo" e ingrese el código ${res.codigo_invitacion} junto con su Nombre y PIN.`
+          : `Comparte el código ${res.codigo_invitacion}. El integrante solo debe elegir "Unirse a un Núcleo" e ingresar su Nombre y PIN.`,
         [{ text: 'Entendido', onPress: () => navigation.goBack() }],
       );
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'No se pudo generar la invitación');
+      Alert.alert('Aviso', e?.message || 'No se pudo procesar la invitación');
     } finally {
       setLoading(false);
     }
@@ -51,7 +70,6 @@ export function AddMemberPage() {
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
-      {/* Header: Flecha atrás y título "Añadir Miembro" */}
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
         <Pressable
           onPress={() => navigation.goBack()}
@@ -68,15 +86,28 @@ export function AddMemberPage() {
       </View>
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        {/* Selector de Tipo de Miembro */}
-        <Text style={[styles.sectionTitle, { color: colors.textPrimary }]}>Tipo de Miembro</Text>
+        <View style={[styles.codeBox, { backgroundColor: colors.softBg, borderColor: colors.primary }]}>
+          <Text style={[styles.codeBoxTitle, { color: colors.textSecondary }]}>
+            Código de vinculación de "{hogar?.nombre}"
+          </Text>
+          <Text style={[styles.codeBoxValue, { color: colors.primary }]}>
+            {hogar?.codigo_invitacion ?? 'DEMO01'}
+          </Text>
+          <Text style={[styles.codeBoxHelp, { color: colors.textSecondary }]}>
+            El otro emulador/dispositivo puede entrar con este código usando solo su Nombre y un PIN de 4-6 dígitos.
+          </Text>
+        </View>
+
+        <Text style={[styles.sectionTitle, { color: colors.textPrimary }]}>Rol en este Hogar</Text>
         <Text style={[styles.sectionSubtitle, { color: colors.textSecondary }]}>
-          Define el rol y nivel de responsabilidad dentro del hogar
+          {esHogarConJefe
+            ? 'Este hogar funciona con Jefe de Hogar: los Integrantes requieren tu validación.'
+            : 'Este hogar es Colaborativo: por defecto todos tienen permisos directos.'}
         </Text>
 
         <View style={styles.roleSelector}>
           <Pressable
-            onPress={() => setTipoMiembro('MIEMBRO')}
+            onPress={() => seleccionarRol('MIEMBRO')}
             style={[
               styles.roleCard,
               {
@@ -89,28 +120,28 @@ export function AddMemberPage() {
             <Ionicons
               name="person-outline"
               size={24}
-              color={tipoMiembro === 'MIEMBRO' ? (colors.onPrimary ?? '#FFFFFF') : colors.textPrimary}
+              color={tipoMiembro === 'MIEMBRO' ? '#FFFFFF' : colors.textPrimary}
             />
             <Text
               style={[
                 styles.roleText,
-                { color: tipoMiembro === 'MIEMBRO' ? (colors.onPrimary ?? '#FFFFFF') : colors.textPrimary },
+                { color: tipoMiembro === 'MIEMBRO' ? '#FFFFFF' : colors.textPrimary },
               ]}
             >
-              Miembro
+              Integrante
             </Text>
             <Text
               style={[
                 styles.roleSub,
-                { color: tipoMiembro === 'MIEMBRO' ? (colors.onPrimary ?? '#FFFFFF') + 'cc' : colors.textSecondary },
+                { color: tipoMiembro === 'MIEMBRO' ? '#FFFFFFCC' : colors.textSecondary },
               ]}
             >
-              Realiza tareas y compras
+              {esHogarConJefe ? 'Hijo / Supervisado' : 'Colaborador par'}
             </Text>
           </Pressable>
 
           <Pressable
-            onPress={() => setTipoMiembro('ADMINISTRADOR')}
+            onPress={() => seleccionarRol('ADMINISTRADOR')}
             style={[
               styles.roleCard,
               {
@@ -123,57 +154,72 @@ export function AddMemberPage() {
             <Ionicons
               name="shield-checkmark-outline"
               size={24}
-              color={tipoMiembro === 'ADMINISTRADOR' ? (colors.onPrimary ?? '#FFFFFF') : colors.textPrimary}
+              color={tipoMiembro === 'ADMINISTRADOR' ? '#FFFFFF' : colors.textPrimary}
             />
             <Text
               style={[
                 styles.roleText,
-                { color: tipoMiembro === 'ADMINISTRADOR' ? (colors.onPrimary ?? '#FFFFFF') : colors.textPrimary },
+                { color: tipoMiembro === 'ADMINISTRADOR' ? '#FFFFFF' : colors.textPrimary },
               ]}
             >
-              Administrador
+              Jefe de Hogar
             </Text>
             <Text
               style={[
                 styles.roleSub,
-                {
-                  color:
-                    tipoMiembro === 'ADMINISTRADOR'
-                      ? (colors.onPrimary ?? '#FFFFFF') + 'cc'
-                      : colors.textSecondary,
-                },
+                { color: tipoMiembro === 'ADMINISTRADOR' ? '#FFFFFFCC' : colors.textSecondary },
               ]}
             >
-              Gestiona núcleo y miembros
+              Valida y administra todo
             </Text>
           </Pressable>
         </View>
 
-        {/* Input Opcional de Email */}
         <AppInput
-          label="Correo Electrónico (Opcional)"
-          placeholder="ejemplo@correo.cl"
-          value={emailInvitado}
-          onChangeText={setEmailInvitado}
-          keyboardType="email-address"
-          icon="mail-outline"
+          label="Nombre de Cuenta Existente (Opcional — vinculación directa)"
+          placeholder="Ej: Sofía Vidal"
+          value={nombreInvitado}
+          onChangeText={setNombreInvitado}
+          icon="person-add-outline"
         />
 
-        {/* Lista de Opciones Configurables con <Switch> */}
-        <Text style={[styles.sectionTitle, { color: colors.textPrimary, marginTop: spacing.md }]}>
-          Permisos y Opciones
+        <Text style={[styles.sectionTitle, { color: colors.textPrimary, marginTop: spacing.sm }]}>
+          Permisos del Integrante
         </Text>
 
         <AppCard style={styles.switchContainer}>
           <View style={styles.switchRow}>
             <View style={styles.switchTextCol}>
-              <Text style={[styles.switchTitle, { color: colors.textPrimary }]}>Opción 1: Crear y asignar tareas</Text>
+              <Text style={[styles.switchTitle, { color: colors.textPrimary }]}>
+                Validar y completar tareas directo
+              </Text>
               <Text style={[styles.switchSub, { color: colors.textSecondary }]}>
-                Permite programar nuevas responsabilidades en el mural
+                Si se desactiva, sus tareas hechas pasan a revisión del Jefe de Hogar
               </Text>
             </View>
             <Switch
-              value={permisoCrearTareas}
+              value={tipoMiembro === 'ADMINISTRADOR' ? true : permisoValidarTareas}
+              disabled={tipoMiembro === 'ADMINISTRADOR'}
+              onValueChange={setPermisoValidarTareas}
+              trackColor={{ false: colors.softBg, true: colors.secondary }}
+              thumbColor={permisoValidarTareas ? colors.primary : '#FFFFFF'}
+            />
+          </View>
+
+          <View style={[styles.divider, { backgroundColor: colors.border }]} />
+
+          <View style={styles.switchRow}>
+            <View style={styles.switchTextCol}>
+              <Text style={[styles.switchTitle, { color: colors.textPrimary }]}>
+                Crear tareas sin aprobación
+              </Text>
+              <Text style={[styles.switchSub, { color: colors.textSecondary }]}>
+                Si se desactiva, podrá proponer tareas para que el Jefe las apruebe
+              </Text>
+            </View>
+            <Switch
+              value={tipoMiembro === 'ADMINISTRADOR' ? true : permisoCrearTareas}
+              disabled={tipoMiembro === 'ADMINISTRADOR'}
               onValueChange={setPermisoCrearTareas}
               trackColor={{ false: colors.softBg, true: colors.secondary }}
               thumbColor={permisoCrearTareas ? colors.primary : '#FFFFFF'}
@@ -184,54 +230,26 @@ export function AddMemberPage() {
 
           <View style={styles.switchRow}>
             <View style={styles.switchTextCol}>
-              <Text style={[styles.switchTitle, { color: colors.textPrimary }]}>Opción 2: Editar lista de compras</Text>
+              <Text style={[styles.switchTitle, { color: colors.textPrimary }]}>
+                Gestionar lista de compras directo
+              </Text>
               <Text style={[styles.switchSub, { color: colors.textSecondary }]}>
-                Permite agregar y tachar artículos del supermercado
+                Si se desactiva, sus productos y compras requerirán validación
               </Text>
             </View>
             <Switch
-              value={permisoCompras}
+              value={tipoMiembro === 'ADMINISTRADOR' ? true : permisoCompras}
+              disabled={tipoMiembro === 'ADMINISTRADOR'}
               onValueChange={setPermisoCompras}
               trackColor={{ false: colors.softBg, true: colors.secondary }}
               thumbColor={permisoCompras ? colors.primary : '#FFFFFF'}
             />
           </View>
-
-          <View style={[styles.divider, { backgroundColor: colors.border }]} />
-
-          <View style={styles.switchRow}>
-            <View style={styles.switchTextCol}>
-              <Text style={[styles.switchTitle, { color: colors.textPrimary }]}>Opción 3: Notificaciones de progreso</Text>
-              <Text style={[styles.switchSub, { color: colors.textSecondary }]}>
-                Enviar resumen de cumplimiento semanal
-              </Text>
-            </View>
-            <Switch
-              value={permisoNotificaciones}
-              onValueChange={setPermisoNotificaciones}
-              trackColor={{ false: colors.softBg, true: colors.secondary }}
-              thumbColor={permisoNotificaciones ? colors.primary : '#FFFFFF'}
-            />
-          </View>
         </AppCard>
 
-        {/* Código de Vinculación Destacado */}
-        <View style={[styles.codeBox, { backgroundColor: colors.softBg, borderColor: colors.border }]}>
-          <Text style={[styles.codeBoxTitle, { color: colors.textSecondary }]}>
-            Código de vinculación para compartir:
-          </Text>
-          <Text style={[styles.codeBoxValue, { color: colors.primary }]}>
-            {hogar?.codigo_invitacion ?? 'NH-7824'}
-          </Text>
-          <Text style={[styles.codeBoxHelp, { color: colors.textSecondary }]}>
-            El invitado solo debe abrir la app y presionar "Unirse a un Núcleo Familiar".
-          </Text>
-        </View>
-
-        {/* Botón Inferior: "Enviar Invitación" con icono de avión de papel */}
         <View style={styles.footerBtn}>
           <AppButton
-            title="Enviar Invitación"
+            title={nombreInvitado.trim() ? 'Vincular / Guardar Invitación' : 'Confirmar Código de Invitación'}
             icon="paper-plane-outline"
             onPress={handleEnviar}
             loading={loading}
@@ -269,6 +287,29 @@ const styles = StyleSheet.create({
     padding: spacing.lg,
     paddingBottom: 36,
   },
+  codeBox: {
+    padding: spacing.lg,
+    borderRadius: radius.lg,
+    borderWidth: 1.5,
+    alignItems: 'center',
+    marginBottom: spacing.lg,
+  },
+  codeBoxTitle: {
+    fontFamily: fonts.semibold,
+    fontSize: 12,
+  },
+  codeBoxValue: {
+    fontFamily: fonts.bold,
+    fontSize: 30,
+    letterSpacing: 3,
+    marginVertical: 6,
+  },
+  codeBoxHelp: {
+    fontFamily: fonts.regular,
+    fontSize: 12,
+    textAlign: 'center',
+    lineHeight: 17,
+  },
   sectionTitle: {
     fontFamily: fonts.bold,
     fontSize: 16,
@@ -276,8 +317,9 @@ const styles = StyleSheet.create({
   },
   sectionSubtitle: {
     fontFamily: fonts.regular,
-    fontSize: 13,
+    fontSize: 12,
     marginBottom: spacing.md,
+    lineHeight: 17,
   },
   roleSelector: {
     flexDirection: 'row',
@@ -286,7 +328,7 @@ const styles = StyleSheet.create({
   },
   roleCard: {
     flex: 1,
-    padding: spacing.lg,
+    padding: spacing.md,
     borderRadius: radius.lg,
     alignItems: 'center',
     borderWidth: 1.5,
@@ -310,7 +352,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: spacing.sm,
+    paddingVertical: spacing.xs,
   },
   switchTextCol: {
     flex: 1,
@@ -318,40 +360,18 @@ const styles = StyleSheet.create({
   },
   switchTitle: {
     fontFamily: fonts.semibold,
-    fontSize: 14,
+    fontSize: 13,
   },
   switchSub: {
     fontFamily: fonts.regular,
-    fontSize: 12,
+    fontSize: 11,
     marginTop: 2,
   },
   divider: {
     height: 1,
     marginVertical: spacing.sm,
   },
-  codeBox: {
-    padding: spacing.lg,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    alignItems: 'center',
-    marginBottom: spacing.xl,
-  },
-  codeBoxTitle: {
-    fontFamily: fonts.regular,
-    fontSize: 12,
-  },
-  codeBoxValue: {
-    fontFamily: fonts.bold,
-    fontSize: 28,
-    letterSpacing: 2,
-    marginVertical: 6,
-  },
-  codeBoxHelp: {
-    fontFamily: fonts.regular,
-    fontSize: 12,
-    textAlign: 'center',
-  },
   footerBtn: {
-    marginTop: spacing.sm,
+    marginTop: spacing.xs,
   },
 });

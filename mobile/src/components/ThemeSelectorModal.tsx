@@ -12,6 +12,7 @@ import { THEME_LIST, ThemeId } from '../theme/themes';
 import { useTheme } from '../theme/ThemeContext';
 import { fonts, radius, shadow, spacing } from '../theme/tokens';
 import { AppButton } from './AppButton';
+import { ThemedLogo } from './ThemedLogo';
 
 interface ThemeSelectorModalProps {
   visible: boolean;
@@ -31,10 +32,10 @@ export function ThemeSelectorModal({ visible, onClose }: ThemeSelectorModalProps
       <View style={[styles.overlay, { backgroundColor: colors.overlay }]}>
         <View style={[styles.content, { backgroundColor: colors.surface, borderColor: colors.border }]}>
           <View style={styles.header}>
-            <View>
+            <View style={{ flex: 1, paddingRight: 8 }}>
               <Text style={[styles.title, { color: colors.textPrimary }]}>Personaliza tu App</Text>
               <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
-                Elige entre los 4 ambientes visuales de NeatHogar
+                El tema cambia tanto los colores de la interfaz como el logo oficial
               </Text>
             </View>
             <Pressable onPress={onClose} style={[styles.closeBtn, { backgroundColor: colors.softBg }]}>
@@ -63,9 +64,11 @@ export function ThemeSelectorModal({ visible, onClose }: ThemeSelectorModalProps
                 >
                   <View style={styles.cardHeader}>
                     <View style={styles.titleRow}>
-                      <Text style={styles.emoji}>{t.emoji}</Text>
+                      <ThemedLogo overrideThemeId={t.id} size={42} borderRadius={11} />
                       <View>
-                        <Text style={[styles.themeName, { color: t.colors.textPrimary }]}>{t.nombre}</Text>
+                        <Text style={[styles.themeName, { color: t.colors.textPrimary }]}>
+                          {t.emoji} {t.nombre}
+                        </Text>
                         <Text style={[styles.themeType, { color: t.colors.textSecondary }]}>
                           {t.isDark ? 'Tema Oscuro' : 'Tema Claro'}
                         </Text>
@@ -128,8 +131,9 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     fontFamily: fonts.regular,
-    fontSize: 13,
+    fontSize: 12,
     marginTop: 3,
+    lineHeight: 16,
   },
   closeBtn: {
     width: 34,
@@ -154,10 +158,7 @@ const styles = StyleSheet.create({
   titleRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-  },
-  emoji: {
-    fontSize: 26,
+    gap: 12,
   },
   themeName: {
     fontFamily: fonts.bold,
@@ -166,6 +167,7 @@ const styles = StyleSheet.create({
   themeType: {
     fontFamily: fonts.regular,
     fontSize: 12,
+    marginTop: 1,
   },
   selectedBadge: {
     width: 26,

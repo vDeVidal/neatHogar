@@ -1,4 +1,4 @@
-import { IsEnum, IsIn, IsOptional, IsString, IsUrl, MaxLength, MinLength } from 'class-validator';
+import { IsEnum, IsIn, IsOptional, IsString, IsUrl, Matches, MaxLength, MinLength } from 'class-validator';
 import { NivelDisponibilidad } from '@prisma/client';
 import { TEMAS_VALIDOS } from '../../common/constantes';
 
@@ -8,6 +8,10 @@ export class ActualizarPerfilDto {
   @MinLength(2)
   @MaxLength(60)
   nombre?: string;
+
+  @IsOptional()
+  @Matches(/^\d{4,6}$/, { message: 'El PIN debe tener entre 4 y 6 dígitos numéricos' })
+  pin?: string;
 
   @IsOptional()
   @IsEnum(NivelDisponibilidad)

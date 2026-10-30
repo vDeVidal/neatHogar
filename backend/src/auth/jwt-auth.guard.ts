@@ -24,7 +24,13 @@ export class JwtAuthGuard implements CanActivate {
     }
     try {
       const payload = await this.jwt.verifyAsync(token);
-      request.user = { id_usuario: payload.sub, email: payload.email };
+      const rawHogar = request.headers['x-hogar-id'];
+      const parsedHogar = rawHogar ? parseInt(String(rawHogar), 10) : undefined;
+      request.user = {
+        id_usuario: payload.sub,
+        email: payload.email,
+        id_hogar: parsedHogar && Number.isFinite(parsedHogar) && parsedHogar > 0 ? parsedHogar : undefined,
+      };
       return true;
     } catch {
       throw new UnauthorizedException('Token inválido o expirado');

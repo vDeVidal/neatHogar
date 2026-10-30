@@ -18,26 +18,28 @@ import { AppCard } from '../components/AppCard';
 import { AppInput } from '../components/AppInput';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../theme/ThemeContext';
-import { fonts, radius, shadow, spacing } from '../theme/tokens';
+import { fonts, radius, spacing } from '../theme/tokens';
 
 export function CreacionTareasPage() {
-  const { colors, theme } = useTheme();
+  const { colors } = useTheme();
   const navigation = useNavigation();
-  const { hogar, categorias, agregarTarea } = useAuth();
+  const { hogar, usuario, categorias, agregarTarea, puedeCrearTareasDirecto } = useAuth();
 
   const miembros = hogar?.miembros ?? [];
   const categoriasTarea = categorias.filter((c) => c.tipo === 'TAREA');
 
   const [titulo, setTitulo] = useState('');
   const [detalles, setDetalles] = useState('');
-  const [idAsignado, setIdAsignado] = useState<number | null>(miembros[0]?.id_usuario ?? null);
-  const [idCategoria, setIdCategoria] = useState<number | null>(categoriasTarea[0]?.id_categoria ?? null);
+  const [idAsignado, setIdAsignado] = useState<number | null>(
+    usuario?.id_usuario ?? miembros[0]?.id_usuario ?? null,
+  );
+  const [idCategoria, setIdCategoria] = useState<number | null>(
+    categoriasTarea[0]?.id_categoria ?? null,
+  );
   const [puntos, setPuntos] = useState(15);
   const [recordatorio, setRecordatorio] = useState(true);
   const [tareaRecurrente, setTareaRecurrente] = useState(false);
   const [loading, setLoading] = useState(false);
-
-  // Modal para seleccionar miembro
   const [pickerMiembroVisible, setPickerMiembroVisible] = useState(false);
 
   const miembroSeleccionado = miembros.find((m) => m.id_usuario === idAsignado);
@@ -73,7 +75,6 @@ export function CreacionTareasPage() {
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
-      {/* Header: Flecha atrás y título "Creación de Tareas" */}
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
         <Pressable
           onPress={() => navigation.goBack()}
@@ -85,12 +86,28 @@ export function CreacionTareasPage() {
         >
           <Ionicons name="arrow-back" size={22} color={colors.textPrimary} />
         </Pressable>
-        <Text style={[styles.title, { color: colors.textPrimary }]}>Creación de Tareas</Text>
+        <Text style={[styles.title, { color: colors.textPrimary }]}>
+          {puedeCrearTareasDirecto ? 'Creación de Tareas' : 'Proponer Tarea'}
+        </Text>
         <View style={{ width: 40 }} />
       </View>
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        {/* Título de la tarea */}
+        {!puedeCrearTareasDirecto && (
+          <View
+            style={[
+              styles.proposalBanner,
+              { backgroundColor: colors.warning + '18', borderColor: colors.warning },
+            ]}
+          >
+            <Ionicons name="shield-checkmark-outline" size={20} color={colors.warning} />
+            <Text style={[styles.proposalBannerText, { color: colors.textPrimary }]}>
+              En este hogar supervisado, tu tarea se enviará como{' '}
+              <Text style={{ fontFamily: fonts.bold }}>Propuesta</Text> para que el Jefe de Hogar la apruebe.
+            </Text>
+          </View>
+        )}
+
         <AppInput
           label="Título de la Tarea"
           placeholder="Ej: Desinfectar refrigerador, Sacar basura"
@@ -99,7 +116,6 @@ export function CreacionTareasPage() {
           icon="checkbox-outline"
         />
 
-        {/* Selector Desplegable: Nombre del Miembro Asignado */}
         <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>Miembro Asignado</Text>
         <Pressable
           onPress={() => setPickerMiembroVisible(true)}
@@ -111,13 +127,14 @@ export function CreacionTareasPage() {
           <View style={styles.dropdownLeft}>
             <Ionicons name="person-outline" size={18} color={colors.primary} />
             <Text style={[styles.dropdownText, { color: colors.textPrimary }]}>
-              {miembroSeleccionado?.usuario.nombre ?? 'Seleccionar integrante'}
+              {miembroSeleccionado
+                ? miembroSeleccionado.usuario.nombre
+                : 'Cualquiera (Sin asignar)'}
             </Text>
           </View>
           <Ionicons name="chevron-down" size={18} color={colors.textSecondary} />
         </Pressable>
 
-        {/* Selector de Categoría */}
         <Text style={[styles.fieldLabel, { color: colors.textSecondary, marginTop: spacing.md }]}>
           Categoría
         </Text>
@@ -149,7 +166,6 @@ export function CreacionTareasPage() {
           })}
         </ScrollView>
 
-        {/* Dificultad / Puntos */}
         <Text style={[styles.fieldLabel, { color: colors.textSecondary, marginTop: spacing.md }]}>
           Nivel de Esfuerzo (Puntos)
         </Text>
@@ -181,7 +197,6 @@ export function CreacionTareasPage() {
           })}
         </View>
 
-        {/* Campo Multilínea: "Detalles de la Tarea" */}
         <Text style={[styles.fieldLabel, { color: colors.textSecondary, marginTop: spacing.md }]}>
           Detalles de la Tarea
         </Text>
@@ -202,7 +217,6 @@ export function CreacionTareasPage() {
           />
         </View>
 
-        {/* Opciones Adicionales con <Switch> */}
         <Text style={[styles.fieldLabel, { color: colors.textSecondary, marginTop: spacing.lg }]}>
           Opciones Adicionales
         </Text>
@@ -236,11 +250,10 @@ export function CreacionTareasPage() {
           </View>
         </AppCard>
 
-        {/* Botón Cuadrado Inferior "Confirmar" con icono de check (✓) */}
         <View style={styles.footerBtn}>
           <AppButton
-            title="Confirmar"
-            icon="checkmark"
+            title={puedeCrearTareasDirecto ? 'Confirmar Tarea' : 'Enviar Propuesta al Jefe de Hogar'}
+            icon={puedeCrearTareasDirecto ? 'checkmark' : 'paper-plane-outline'}
             onPress={handleConfirmar}
             loading={loading}
             style={styles.confirmBtn}
@@ -258,6 +271,31 @@ export function CreacionTareasPage() {
         <View style={[styles.modalOverlay, { backgroundColor: colors.overlay }]}>
           <View style={[styles.modalContent, { backgroundColor: colors.surface, borderColor: colors.border }]}>
             <Text style={[styles.modalTitle, { color: colors.textPrimary }]}>Asignar a un Integrante</Text>
+
+            <Pressable
+              onPress={() => {
+                setIdAsignado(null);
+                setPickerMiembroVisible(false);
+              }}
+              style={[
+                styles.pickerRow,
+                {
+                  backgroundColor: idAsignado === null ? colors.primary : 'transparent',
+                  borderRadius: radius.md,
+                },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.pickerText,
+                  { color: idAsignado === null ? '#FFFFFF' : colors.textPrimary },
+                ]}
+              >
+                Cualquiera (Sin asignar)
+              </Text>
+              {idAsignado === null && <Ionicons name="checkmark" size={18} color="#FFFFFF" />}
+            </Pressable>
+
             {miembros.map((m) => {
               const isSelected = m.id_usuario === idAsignado;
               return (
@@ -278,10 +316,10 @@ export function CreacionTareasPage() {
                   <Text
                     style={[
                       styles.pickerText,
-                      { color: isSelected ? (colors.onPrimary ?? '#FFFFFF') : colors.textPrimary },
+                      { color: isSelected ? '#FFFFFF' : colors.textPrimary },
                     ]}
                   >
-                    {m.usuario.nombre} ({m.rol === 'ADMINISTRADOR' ? 'Admin' : 'Miembro'})
+                    {m.usuario.nombre} ({m.rol === 'ADMINISTRADOR' ? 'Jefe de Hogar' : 'Integrante'})
                   </Text>
                   {isSelected && <Ionicons name="checkmark" size={18} color="#FFFFFF" />}
                 </Pressable>
@@ -320,6 +358,21 @@ const styles = StyleSheet.create({
   content: {
     padding: spacing.lg,
     paddingBottom: 40,
+  },
+  proposalBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: spacing.md,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    marginBottom: spacing.md,
+  },
+  proposalBannerText: {
+    fontFamily: fonts.regular,
+    fontSize: 12,
+    flex: 1,
+    lineHeight: 17,
   },
   fieldLabel: {
     fontFamily: fonts.medium,

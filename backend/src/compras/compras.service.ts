@@ -1,8 +1,14 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma, TipoCategoria } from '@prisma/client';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { EstadoValidacion, Prisma, RolMiembro, TipoCategoria, TipoHogar } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { HogaresService } from '../hogares/hogares.service';
-import { ActualizarItemDto, CrearCategoriaDto, CrearItemDto, FiltroCategoriasDto, FiltroItemsDto } from './dto/compra.dto';
+import {
+  ActualizarItemDto,
+  CrearCategoriaDto,
+  CrearItemDto,
+  FiltroCategoriasDto,
+  FiltroItemsDto,
+} from './dto/compra.dto';
 
 const INCLUDE_ITEM = {
   categoria: true,
@@ -36,8 +42,8 @@ export class ComprasService {
 
   // ───────────── Ítems de compra ─────────────
 
-  async listar(id_usuario: number, filtro: FiltroItemsDto) {
-    const { id_hogar } = await this.hogares.obtenerMembresia(id_usuario);
+  async listar(id_usuario: number, filtro: FiltroItemsDto, id_hogar_preferido?: number) {
+    const { id_hogar } = await this.hogares.obtenerMembresia(id_usuario, id_hogar_preferido);
     return this.prisma.itemCompra.findMany({
       where: {
         id_hogar,
@@ -49,23 +55,42 @@ export class ComprasService {
     });
   }
 
-  async crear(id_usuario: number, dto: CrearItemDto) {
-    const { id_hogar } = await this.hogares.obtenerMembresia(id_usuario);
+  async crear(id_usuario: number, dto: CrearItemDto, id_hogar_preferido?: number) {
+    const membresia = await this.hogares.obtenerMembresia(id_usuario, id_hogar_preferido);
     await this.validarCategoria(dto.id_categoria);
+
+    const requiereValidacion =
+      membresia.hogar.tipo_hogar === TipoHogar.JEFE_DE_HOGAR &&
+      membresia.rol !== RolMiembro.ADMINISTRADOR &&
+      !membresia.puede_gestionar_compras;
+
     return this.prisma.itemCompra.create({
       data: {
-        id_hogar,
+        id_hogar: membresia.id_hogar,
         id_creador: id_usuario,
         nombre: dto.nombre.trim(),
         cantidad: dto.cantidad?.trim() || '1',
         id_categoria: dto.id_categoria ?? null,
+        estado_validacion: requiereValidacion
+          ? EstadoValidacion.PENDIENTE_APROBACION
+          : EstadoValidacion.APROBADO,
       },
       include: INCLUDE_ITEM,
     });
   }
 
-  async actualizar(id_usuario: number, id_item: number, dto: ActualizarItemDto) {
-    await this.buscar(id_usuario, id_item);
+  async actualizar(id_usuario: number, id_item: number, dto: ActualizarItemDto, id_hogar_preferido?: number) {
+    const { membresia, item } = await this.buscarConMembresia(id_usuario, id_item, id_hogar_preferido);
+    const puedeGestionar =
+      membresia.hogar.tipo_hogar === TipoHogar.COLABORATIVO ||
+      membresia.rol === RolMiembro.ADMINISTRADOR ||
+      membresia.puede_gestionar_compras ||
+      (item.id_creador === id_usuario && item.estado_validacion === EstadoValidacion.PENDIENTE_APROBACION);
+
+    if (!puedeGestionar) {
+      throw new ForbiddenException('Solo el Jefe de Hogar puede editar productos aprobados');
+    }
+
     await this.validarCategoria(dto.id_categoria);
     return this.prisma.itemCompra.update({
       where: { id_item },
@@ -74,14 +99,74 @@ export class ComprasService {
     });
   }
 
-  /** Alterna el estado comprado/no comprado registrando quién lo compró. */
-  async alternar(id_usuario: number, id_item: number) {
-    const item = await this.buscar(id_usuario, id_item);
+  /**
+   * Alterna el estado comprado/no comprado:
+   * - En COLABORATIVO o si es Jefe de Hogar / tiene permiso: marca como comprado directamente.
+   * - En JEFE_DE_HOGAR siendo MIEMBRO sin permiso:
+   *   marca COMPRA_POR_VALIDAR para que el Jefe de Hogar confirme la compra.
+   */
+  async alternar(id_usuario: number, id_item: number, id_hogar_preferido?: number) {
+    const { membresia, item } = await this.buscarConMembresia(id_usuario, id_item, id_hogar_preferido);
+    const puedeGestionar =
+      membresia.hogar.tipo_hogar === TipoHogar.COLABORATIVO ||
+      membresia.rol === RolMiembro.ADMINISTRADOR ||
+      membresia.puede_gestionar_compras;
+
+    if (!puedeGestionar) {
+      if (item.estado_validacion === EstadoValidacion.PENDIENTE_APROBACION) {
+        throw new ForbiddenException('El Jefe de Hogar debe aprobar primero este producto en la lista');
+      }
+      if (item.comprado) {
+        throw new ForbiddenException('Solo el Jefe de Hogar puede desmarcar compras ya validadas');
+      }
+      if (item.estado_validacion === EstadoValidacion.COMPRA_POR_VALIDAR) {
+        if (item.id_comprador === id_usuario) {
+          return this.prisma.itemCompra.update({
+            where: { id_item },
+            data: { estado_validacion: EstadoValidacion.APROBADO, id_comprador: null },
+            include: INCLUDE_ITEM,
+          });
+        }
+        throw new ForbiddenException('Esta compra ya está esperando validación del Jefe de Hogar');
+      }
+      return this.prisma.itemCompra.update({
+        where: { id_item },
+        data: {
+          estado_validacion: EstadoValidacion.COMPRA_POR_VALIDAR,
+          id_comprador: id_usuario,
+        },
+        include: INCLUDE_ITEM,
+      });
+    }
+
+    // Jefe de Hogar o modo Colaborativo:
+    if (item.estado_validacion === EstadoValidacion.PENDIENTE_APROBACION) {
+      return this.prisma.itemCompra.update({
+        where: { id_item },
+        data: { estado_validacion: EstadoValidacion.APROBADO },
+        include: INCLUDE_ITEM,
+      });
+    }
+
+    if (item.estado_validacion === EstadoValidacion.COMPRA_POR_VALIDAR) {
+      return this.prisma.itemCompra.update({
+        where: { id_item },
+        data: {
+          comprado: true,
+          estado_validacion: EstadoValidacion.APROBADO,
+          id_comprador: item.id_comprador ?? id_usuario,
+          fecha_compra: new Date(),
+        },
+        include: INCLUDE_ITEM,
+      });
+    }
+
     const comprado = !item.comprado;
     return this.prisma.itemCompra.update({
       where: { id_item },
       data: {
         comprado,
+        estado_validacion: EstadoValidacion.APROBADO,
         id_comprador: comprado ? id_usuario : null,
         fecha_compra: comprado ? new Date() : null,
       },
@@ -89,25 +174,106 @@ export class ComprasService {
     });
   }
 
-  async eliminar(id_usuario: number, id_item: number) {
-    await this.buscar(id_usuario, id_item);
+  /** Aprueba la solicitud de un producto (PENDIENTE_APROBACION) o valida su compra (COMPRA_POR_VALIDAR). */
+  async validar(id_usuario: number, id_item: number, id_hogar_preferido?: number) {
+    const { membresia, item } = await this.buscarConMembresia(id_usuario, id_item, id_hogar_preferido);
+    if (
+      membresia.rol !== RolMiembro.ADMINISTRADOR &&
+      membresia.hogar.tipo_hogar !== TipoHogar.COLABORATIVO &&
+      !membresia.puede_gestionar_compras
+    ) {
+      throw new ForbiddenException('Solo el Jefe de Hogar puede validar ítems de compra');
+    }
+
+    if (item.estado_validacion === EstadoValidacion.PENDIENTE_APROBACION) {
+      return this.prisma.itemCompra.update({
+        where: { id_item },
+        data: { estado_validacion: EstadoValidacion.APROBADO },
+        include: INCLUDE_ITEM,
+      });
+    }
+
+    return this.prisma.itemCompra.update({
+      where: { id_item },
+      data: {
+        comprado: true,
+        estado_validacion: EstadoValidacion.APROBADO,
+        id_comprador: item.id_comprador ?? id_usuario,
+        fecha_compra: new Date(),
+      },
+      include: INCLUDE_ITEM,
+    });
+  }
+
+  /** Rechaza una solicitud de producto (la elimina) o devuelve una compra por validar a pendiente. */
+  async rechazar(id_usuario: number, id_item: number, id_hogar_preferido?: number) {
+    const { membresia, item } = await this.buscarConMembresia(id_usuario, id_item, id_hogar_preferido);
+    const esJefe = membresia.rol === RolMiembro.ADMINISTRADOR || membresia.puede_gestionar_compras;
+    const esAutor =
+      (item.estado_validacion === EstadoValidacion.PENDIENTE_APROBACION && item.id_creador === id_usuario) ||
+      (item.estado_validacion === EstadoValidacion.COMPRA_POR_VALIDAR && item.id_comprador === id_usuario);
+
+    if (!esJefe && !esAutor) {
+      throw new ForbiddenException('Solo el Jefe de Hogar puede rechazar esta acción');
+    }
+
+    if (item.estado_validacion === EstadoValidacion.PENDIENTE_APROBACION) {
+      await this.prisma.itemCompra.delete({ where: { id_item } });
+      return { ok: true, eliminado: true, id_item };
+    }
+
+    return this.prisma.itemCompra.update({
+      where: { id_item },
+      data: {
+        comprado: false,
+        estado_validacion: EstadoValidacion.APROBADO,
+        id_comprador: null,
+        fecha_compra: null,
+      },
+      include: INCLUDE_ITEM,
+    });
+  }
+
+  async eliminar(id_usuario: number, id_item: number, id_hogar_preferido?: number) {
+    const { membresia, item } = await this.buscarConMembresia(id_usuario, id_item, id_hogar_preferido);
+    const puedeEliminar =
+      membresia.hogar.tipo_hogar === TipoHogar.COLABORATIVO ||
+      membresia.rol === RolMiembro.ADMINISTRADOR ||
+      membresia.puede_gestionar_compras ||
+      (item.id_creador === id_usuario && item.estado_validacion === EstadoValidacion.PENDIENTE_APROBACION);
+
+    if (!puedeEliminar) {
+      throw new ForbiddenException('Solo el Jefe de Hogar puede eliminar productos de la lista');
+    }
+
     await this.prisma.itemCompra.delete({ where: { id_item } });
     return { ok: true };
   }
 
-  async limpiarComprados(id_usuario: number) {
-    const { id_hogar } = await this.hogares.obtenerMembresia(id_usuario);
-    const { count } = await this.prisma.itemCompra.deleteMany({ where: { id_hogar, comprado: true } });
+  async limpiarComprados(id_usuario: number, id_hogar_preferido?: number) {
+    const membresia = await this.hogares.obtenerMembresia(id_usuario, id_hogar_preferido);
+    const puedeLimpiar =
+      membresia.hogar.tipo_hogar === TipoHogar.COLABORATIVO ||
+      membresia.rol === RolMiembro.ADMINISTRADOR ||
+      membresia.puede_gestionar_compras;
+
+    if (!puedeLimpiar) {
+      throw new ForbiddenException('Solo el Jefe de Hogar puede limpiar los productos comprados');
+    }
+
+    const { count } = await this.prisma.itemCompra.deleteMany({
+      where: { id_hogar: membresia.id_hogar, comprado: true },
+    });
     return { ok: true, eliminados: count };
   }
 
   // ───────────── Privados ─────────────
 
-  private async buscar(id_usuario: number, id_item: number) {
-    const { id_hogar } = await this.hogares.obtenerMembresia(id_usuario);
+  private async buscarConMembresia(id_usuario: number, id_item: number, id_hogar_preferido?: number) {
+    const membresia = await this.hogares.obtenerMembresia(id_usuario, id_hogar_preferido);
     const item = await this.prisma.itemCompra.findUnique({ where: { id_item } });
-    if (!item || item.id_hogar !== id_hogar) throw new NotFoundException('Producto no encontrado');
-    return item;
+    if (!item || item.id_hogar !== membresia.id_hogar) throw new NotFoundException('Producto no encontrado');
+    return { membresia, item };
   }
 
   private async validarCategoria(id_categoria?: number | null) {

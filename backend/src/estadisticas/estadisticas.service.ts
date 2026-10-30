@@ -5,8 +5,6 @@ import { HogaresService } from '../hogares/hogares.service';
 import { PESO_DISPONIBILIDAD } from '../common/constantes';
 
 const DIAS_SEMANA = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
-
-/** Margen (en puntos porcentuales) bajo el cual la carga se considera equilibrada. */
 const TOLERANCIA_BALANCE = 10;
 
 @Injectable()
@@ -16,16 +14,21 @@ export class EstadisticasService {
     private readonly hogares: HogaresService,
   ) {}
 
-  /**
-   * Participación por miembro, ponderada por disponibilidad.
-   * porcentaje_esperado = peso(disponibilidad) / Σ pesos  (ALTA=3, MEDIA=2, BAJA=1)
-   * porcentaje_real     = puntos del miembro / Σ puntos del hogar
-   */
-  async participacion(id_usuario: number) {
-    const { id_hogar } = await this.hogares.obtenerMembresia(id_usuario);
+  async participacion(id_usuario: number, id_hogar_preferido?: number) {
+    const { id_hogar } = await this.hogares.obtenerMembresia(id_usuario, id_hogar_preferido);
     const miembros = await this.prisma.miembroHogar.findMany({
       where: { id_hogar },
-      include: { usuario: { select: { id_usuario: true, nombre: true, avatar_url: true, disponibilidad: true, descripcion_carga: true } } },
+      include: {
+        usuario: {
+          select: {
+            id_usuario: true,
+            nombre: true,
+            avatar_url: true,
+            disponibilidad: true,
+            descripcion_carga: true,
+          },
+        },
+      },
     });
     const conteo = await this.prisma.tarea.groupBy({
       by: ['id_asignado', 'estado'],
@@ -41,8 +44,15 @@ export class EstadisticasService {
 
     const detalle = miembros
       .map((m) => {
-        const completadas = conteo.find((c) => c.id_asignado === m.id_usuario && c.estado === EstadoTarea.COMPLETADA)?._count._all ?? 0;
-        const pendientes = conteo.find((c) => c.id_asignado === m.id_usuario && c.estado === EstadoTarea.PENDIENTE)?._count._all ?? 0;
+        const completadas =
+          conteo.find((c) => c.id_asignado === m.id_usuario && c.estado === EstadoTarea.COMPLETADA)?._count._all ?? 0;
+        const pendientes = conteo
+          .filter(
+            (c) =>
+              c.id_asignado === m.id_usuario &&
+              (c.estado === EstadoTarea.PENDIENTE || c.estado === EstadoTarea.POR_VALIDAR),
+          )
+          .reduce((acc, c) => acc + c._count._all, 0);
         const porcentaje_esperado = Math.round((PESO_DISPONIBILIDAD[m.usuario.disponibilidad] / totalPeso) * 100);
         const porcentaje_real = totalPuntos ? Math.round((m.puntos_acumulados / totalPuntos) * 100) : 0;
         const diferencia = porcentaje_real - porcentaje_esperado;
@@ -78,13 +88,8 @@ export class EstadisticasService {
     };
   }
 
-  /**
-   * Serie diaria para el gráfico del Diario Mural.
-   * @param dias cantidad de días hacia atrás (incluye hoy)
-   * @param tzOffset valor de Date#getTimezoneOffset() del cliente (minutos), para agrupar por día local
-   */
-  async progreso(id_usuario: number, dias: number, tzOffset: number) {
-    const { id_hogar } = await this.hogares.obtenerMembresia(id_usuario);
+  async progreso(id_usuario: number, dias: number, tzOffset: number, id_hogar_preferido?: number) {
+    const { id_hogar } = await this.hogares.obtenerMembresia(id_usuario, id_hogar_preferido);
     const offsetMs = tzOffset * 60_000;
     const claveDia = (d: Date) => new Date(d.getTime() - offsetMs).toISOString().slice(0, 10);
 
@@ -97,7 +102,11 @@ export class EstadisticasService {
 
     const [programadas, completadas] = await Promise.all([
       this.prisma.tarea.findMany({
-        where: { id_hogar, fecha_limite: { gte: inicio, lt: fin } },
+        where: {
+          id_hogar,
+          estado: { not: EstadoTarea.PROPUESTA },
+          fecha_limite: { gte: inicio, lt: fin },
+        },
         select: { fecha_limite: true },
       }),
       this.prisma.tarea.findMany({
@@ -108,7 +117,13 @@ export class EstadisticasService {
 
     const serie = Array.from({ length: dias }, (_, i) => {
       const d = new Date(inicioLocal.getTime() + i * 86_400_000);
-      return { fecha: d.toISOString().slice(0, 10), etiqueta: DIAS_SEMANA[d.getUTCDay()], programadas: 0, completadas: 0, puntos: 0 };
+      return {
+        fecha: d.toISOString().slice(0, 10),
+        etiqueta: DIAS_SEMANA[d.getUTCDay()],
+        programadas: 0,
+        completadas: 0,
+        puntos: 0,
+      };
     });
     const indice = new Map(serie.map((s, i) => [s.fecha, i]));
 

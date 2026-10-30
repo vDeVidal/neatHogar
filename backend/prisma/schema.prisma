@@ -14,9 +14,22 @@ enum RolMiembro {
   MIEMBRO
 }
 
+enum TipoHogar {
+  COLABORATIVO
+  JEFE_DE_HOGAR
+}
+
 enum EstadoTarea {
+  PROPUESTA
   PENDIENTE
+  POR_VALIDAR
   COMPLETADA
+}
+
+enum EstadoValidacion {
+  APROBADO
+  PENDIENTE_APROBACION
+  COMPRA_POR_VALIDAR
 }
 
 enum TipoCategoria {
@@ -33,17 +46,21 @@ enum NivelDisponibilidad {
 model Usuario {
   id_usuario          Int                 @id @default(autoincrement())
   nombre              String
+  nombre_login        String?             @unique
   email               String              @unique
   password_hash       String?
+  pin_hash            String?
   avatar_url          String?
   disponibilidad      NivelDisponibilidad @default(MEDIA)
   descripcion_carga   String?             // Ej: "Estudiante", "Trabajador tiempo completo"
   tema_preferido      String              @default("noche_indigo")
+  id_hogar_activo     Int?
   fecha_registro      DateTime            @default(now())
 
   membresias          MiembroHogar[]
   tareas_creadas      Tarea[]             @relation("TareasCreador")
   tareas_asignadas    Tarea[]             @relation("TareasAsignado")
+  tareas_completadas  Tarea[]             @relation("TareasCompletador")
   items_creados       ItemCompra[]        @relation("ItemsCreador")
   items_comprados     ItemCompra[]        @relation("ItemsComprador")
   gastos_registrados  Gasto[]             @relation("GastosRegistrador") // [Extensión] Pantalla 7
@@ -54,6 +71,7 @@ model Usuario {
 model Hogar {
   id_hogar            Int                 @id @default(autoincrement())
   nombre              String
+  tipo_hogar          TipoHogar           @default(COLABORATIVO)
   codigo_invitacion   String              @unique
   fecha_creacion      DateTime            @default(now())
 
@@ -66,15 +84,18 @@ model Hogar {
 }
 
 model MiembroHogar {
-  id_miembro          Int                 @id @default(autoincrement())
-  id_usuario          Int
-  id_hogar            Int
-  rol                 RolMiembro          @default(MIEMBRO)
-  puntos_acumulados   Int                 @default(0)
-  fecha_ingreso       DateTime            @default(now())
+  id_miembro              Int        @id @default(autoincrement())
+  id_usuario              Int
+  id_hogar                Int
+  rol                     RolMiembro @default(MIEMBRO)
+  puntos_acumulados       Int        @default(0)
+  fecha_ingreso           DateTime   @default(now())
+  puede_validar_tareas    Boolean    @default(true)
+  puede_crear_tareas      Boolean    @default(true)
+  puede_gestionar_compras Boolean    @default(true)
 
-  usuario             Usuario             @relation(fields: [id_usuario], references: [id_usuario], onDelete: Cascade)
-  hogar               Hogar               @relation(fields: [id_hogar], references: [id_hogar], onDelete: Cascade)
+  usuario                 Usuario    @relation(fields: [id_usuario], references: [id_usuario], onDelete: Cascade)
+  hogar                   Hogar      @relation(fields: [id_hogar], references: [id_hogar], onDelete: Cascade)
 
   @@unique([id_usuario, id_hogar])
   @@map("miembro_hogar")
@@ -96,6 +117,7 @@ model Tarea {
   id_hogar            Int
   id_creador          Int
   id_asignado         Int?
+  id_completador      Int?
   id_categoria        Int?
   titulo              String
   descripcion         String?
@@ -108,6 +130,7 @@ model Tarea {
   hogar               Hogar               @relation(fields: [id_hogar], references: [id_hogar], onDelete: Cascade)
   creador             Usuario             @relation("TareasCreador", fields: [id_creador], references: [id_usuario])
   asignado            Usuario?            @relation("TareasAsignado", fields: [id_asignado], references: [id_usuario])
+  completador         Usuario?            @relation("TareasCompletador", fields: [id_completador], references: [id_usuario], onDelete: SetNull)
   categoria           Categoria?          @relation(fields: [id_categoria], references: [id_categoria])
 
   @@map("tarea")
@@ -122,6 +145,7 @@ model ItemCompra {
   nombre              String
   cantidad            String              @default("1")
   comprado            Boolean             @default(false)
+  estado_validacion   EstadoValidacion    @default(APROBADO)
   fecha_creacion      DateTime            @default(now())
   fecha_compra        DateTime?
 
@@ -141,6 +165,7 @@ model Gasto {
   id_registrador      Int
   concepto            String              // Ej: "Arriendo", "Luz", "Agua", "Gastos Comunes"
   monto               Int                 // Monto en pesos (CLP), sin decimales
+  estado_validacion   EstadoValidacion    @default(APROBADO)
   fecha               DateTime            @default(now())
 
   hogar               Hogar               @relation(fields: [id_hogar], references: [id_hogar], onDelete: Cascade)

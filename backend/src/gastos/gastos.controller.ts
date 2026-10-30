@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, ParseIntPipe, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Query } from '@nestjs/common';
 import { UsuarioActual, UsuarioAutenticado } from '../auth/usuario-actual.decorator';
 import { GastosService } from './gastos.service';
 import { CrearGastoDto, FiltroGastosDto } from './dto/gasto.dto';
@@ -9,16 +9,26 @@ export class GastosController {
 
   @Get()
   listar(@UsuarioActual() u: UsuarioAutenticado, @Query() filtro: FiltroGastosDto) {
-    return this.gastos.listar(u.id_usuario, filtro);
+    return this.gastos.listar(u.id_usuario, filtro, u.id_hogar);
   }
 
   @Post()
   crear(@UsuarioActual() u: UsuarioAutenticado, @Body() dto: CrearGastoDto) {
-    return this.gastos.crear(u.id_usuario, dto);
+    return this.gastos.crear(u.id_usuario, dto, u.id_hogar);
+  }
+
+  @Patch(':id/validar')
+  validar(@UsuarioActual() u: UsuarioAutenticado, @Param('id', ParseIntPipe) id: number) {
+    return this.gastos.validar(u.id_usuario, id, u.id_hogar);
+  }
+
+  @Patch(':id/rechazar')
+  rechazar(@UsuarioActual() u: UsuarioAutenticado, @Param('id', ParseIntPipe) id: number) {
+    return this.gastos.eliminar(u.id_usuario, id, u.id_hogar);
   }
 
   @Delete(':id')
   eliminar(@UsuarioActual() u: UsuarioAutenticado, @Param('id', ParseIntPipe) id: number) {
-    return this.gastos.eliminar(u.id_usuario, id);
+    return this.gastos.eliminar(u.id_usuario, id, u.id_hogar);
   }
 }
