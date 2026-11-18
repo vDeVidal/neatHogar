@@ -15,24 +15,40 @@ import {
   MOCK_MIS_HOGARES,
   MOCK_PARTICIPACION,
   MOCK_PROGRESO_DIAS,
+  MOCK_SUMINISTROS,
   MOCK_TAREAS,
   MOCK_USUARIOS,
 } from '../services/mockData';
+import {
+  initNotifications,
+  programarAlertaDespensa,
+  programarAlertasGas,
+} from '../services/notifications';
 import { useTheme } from '../theme/ThemeContext';
 import {
   Categoria,
   Gasto,
   HogarDetalle,
   HogarResumen,
+  InvitacionTemporal,
   ItemCompra,
   MiembroHogar,
   MiembroParticipacion,
   ProgresoDia,
+  ResumenSuministros,
   RolMiembro,
   Tarea,
   TipoHogar,
+  TipoSuministro,
   Usuario,
 } from '../types';
+
+const SUMINISTROS_VACIOS: ResumenSuministros = {
+  gas_activo: null,
+  historial_gas: [],
+  promedio_duracion_dias: null,
+  despensa: [],
+};
 
 interface AuthContextValue {
   usuario: Usuario | null;
@@ -47,6 +63,7 @@ interface AuthContextValue {
   tareas: Tarea[];
   compras: ItemCompra[];
   gastos: Gasto[];
+  suministros: ResumenSuministros;
   categorias: Categoria[];
   participacion: MiembroParticipacion[];
   progreso: ProgresoDia[];
@@ -60,46 +77,64 @@ interface AuthContextValue {
   puedeGestionarComprasDirecto: boolean;
   validacionesPendientesCount: number;
 
-  // Acciones de cuentas sencillas (Nombre + PIN) y tradicionales
-  loginConPin: (nombre: string, pin: string, codigoInvitacion?: string) => Promise<void>;
-  registroConPin: (nombre: string, pin: string) => Promise<void>;
-  login: (email: string, password: string) => Promise<void>;
-  registro: (nombre: string, email: string, password: string, pin?: string) => Promise<void>;
+  // Acciones de cuentas (Nombre/@identificador + PIN y Email/@identificador + Password)
+  loginConPin: (nombreOId: string, pin: string, codigoInvitacion?: string) => Promise<void>;
+  registroConPin: (nombre: string, pin: string, identificador_unico?: string) => Promise<void>;
+  login: (emailOIdentificador: string, password: string) => Promise<void>;
+  registro: (
+    nombre: string,
+    email: string,
+    password: string,
+    opciones?: { identificador_unico?: string; pin?: string },
+  ) => Promise<void>;
   logout: () => Promise<void>;
 
-  // Multi-Hogar
+  // Multi-Hogar & Invitaciones Dinámicas Efímeras (TTL 5 min)
   crearHogar: (params: {
     nombreHogar: string;
     tipoHogar: TipoHogar;
     nombreCreador?: string;
     pinCreador?: string;
+    identificadorCreador?: string;
   }) => Promise<void>;
   unirseHogar: (params: {
     codigo: string;
     nombreMiembro?: string;
     pinMiembro?: string;
+    identificadorMiembro?: string;
   }) => Promise<void>;
   seleccionarHogar: (id_hogar: number) => Promise<void>;
   salirHogarActual: () => Promise<void>;
   cambiarTipoHogar: (tipo: TipoHogar) => Promise<void>;
+  generarCodigoInvitacionTemporal: (opciones?: {
+    rol?: RolMiembro;
+    puede_validar_tareas?: boolean;
+    puede_crear_tareas?: boolean;
+    puede_gestionar_compras?: boolean;
+  }) => Promise<InvitacionTemporal>;
   activarModoDemo: () => void;
   recargarDatos: () => Promise<void>;
 
-  // Acciones Tareas (con flujo de validación Jefe de Hogar)
+  // Acciones Tareas (con Evidencia Fotográfica y Validación Padre/Admin -> Hijo/Miembro)
   toggleTarea: (id_tarea: number) => Promise<void>;
-  validarTarea: (id_tarea: number) => Promise<void>;
-  rechazarTarea: (id_tarea: number) => Promise<void>;
+  completarTareaConEvidencia: (
+    id_tarea: number,
+    payload: { foto_base64?: string; uri?: string },
+  ) => Promise<void>;
+  validarTarea: (id_tarea: number, comentario_revision?: string) => Promise<void>;
+  rechazarTarea: (id_tarea: number, comentario_revision?: string) => Promise<void>;
   agregarTarea: (dto: {
     titulo: string;
     descripcion?: string;
     id_asignado?: number | null;
     id_categoria?: number | null;
     puntos?: number;
+    requiere_foto?: boolean;
     fecha_limite?: string;
   }) => Promise<Tarea | void>;
   eliminarTarea: (id_tarea: number) => Promise<void>;
 
-  // Acciones Compras (con flujo de validación Jefe de Hogar)
+  // Acciones Compras
   toggleCompra: (id_item: number) => Promise<void>;
   validarCompra: (id_item: number) => Promise<void>;
   rechazarCompra: (id_item: number) => Promise<void>;
@@ -108,7 +143,18 @@ interface AuthContextValue {
   limpiarComprados: () => Promise<void>;
   agregarCategoriaCompra: (nombre: string) => Promise<void>;
 
-  // Acciones Gastos (con flujo de validación Jefe de Hogar)
+  // Acciones Suministros, Despensa y Monitor Exclusivo de Gas
+  agregarSuministro: (dto: {
+    tipo: TipoSuministro;
+    nombre: string;
+    fecha_compra?: string;
+    dias_alerta_inicial?: number;
+    dias_alerta_critica?: number;
+    notas?: string;
+  }) => Promise<void>;
+  eliminarSuministro: (id_suministro: number) => Promise<void>;
+
+  // Acciones Gastos
   agregarGasto: (dto: { concepto: string; monto: number }) => Promise<void>;
   validarGasto: (id_gasto: number) => Promise<void>;
   rechazarGasto: (id_gasto: number) => Promise<void>;
@@ -117,6 +163,7 @@ interface AuthContextValue {
   // Perfil y Gestión de Miembros
   actualizarDisponibilidad: (disp: 'ALTA' | 'MEDIA' | 'BAJA', desc?: string) => Promise<void>;
   actualizarPinPerfil: (nuevoPin: string) => Promise<void>;
+  actualizarIdentificadorPerfil: (nuevoId: string) => Promise<void>;
   invitarMiembro: (
     rol: RolMiembro,
     opciones?: {
@@ -126,7 +173,7 @@ interface AuthContextValue {
       email?: string;
       nombre?: string;
     },
-  ) => Promise<{ codigo_invitacion: string }>;
+  ) => Promise<{ codigo_invitacion: string; expira_en?: string; segundos_restantes?: number }>;
   cambiarPermisosMiembro: (
     id_miembro: number,
     permisos: {
@@ -154,11 +201,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [tareas, setTareas] = useState<Tarea[]>([]);
   const [compras, setCompras] = useState<ItemCompra[]>([]);
   const [gastos, setGastos] = useState<Gasto[]>([]);
+  const [suministros, setSuministros] = useState<ResumenSuministros>(SUMINISTROS_VACIOS);
   const [categorias, setCategorias] = useState<Categoria[]>(MOCK_CATEGORIAS);
   const [participacion, setParticipacion] = useState<MiembroParticipacion[]>([]);
   const [progreso, setProgreso] = useState<ProgresoDia[]>([]);
 
-  // Sincronización de tema con backend
   useEffect(() => {
     registerSync(async (temaId) => {
       if (getApiToken() && !isDemoMode) {
@@ -181,24 +228,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setTareas([]);
     setCompras([]);
     setGastos([]);
+    setSuministros(SUMINISTROS_VACIOS);
     setParticipacion([]);
     setProgreso([]);
   }, []);
 
   const cargarColeccionesHogar = useCallback(async () => {
     if (!getApiToken() || isDemoMode) return;
-    const [tareasRes, comprasRes, gastosRes, catRes, partRes, progRes] = await Promise.allSettled([
-      api.getTareas(),
-      api.getCompras(),
-      api.getGastos(),
-      api.getCategorias(),
-      api.getParticipacion(),
-      api.getProgreso(7),
-    ]);
+    const [tareasRes, comprasRes, gastosRes, sumRes, catRes, partRes, progRes] =
+      await Promise.allSettled([
+        api.getTareas(),
+        api.getCompras(),
+        api.getGastos(),
+        api.getSuministros(),
+        api.getCategorias(),
+        api.getParticipacion(),
+        api.getProgreso(7),
+      ]);
 
     if (tareasRes.status === 'fulfilled') setTareas(tareasRes.value);
     if (comprasRes.status === 'fulfilled') setCompras(comprasRes.value);
     if (gastosRes.status === 'fulfilled') setGastos(gastosRes.value);
+    if (sumRes.status === 'fulfilled') setSuministros(sumRes.value);
     if (catRes.status === 'fulfilled') setCategorias(catRes.value);
     if (partRes.status === 'fulfilled') setParticipacion(partRes.value);
     if (progRes.status === 'fulfilled') setProgreso(progRes.value);
@@ -223,6 +274,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setTareas([]);
         setCompras([]);
         setGastos([]);
+        setSuministros(SUMINISTROS_VACIOS);
         setParticipacion([]);
         setProgreso([]);
       }
@@ -234,10 +286,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [isDemoMode, cargarColeccionesHogar, limpiarEstadoLocal]);
 
-  // Inicialización al arrancar la app
   useEffect(() => {
     (async () => {
       try {
+        initNotifications().catch(() => undefined);
         await initApi();
         const token = getApiToken();
         if (token) {
@@ -259,7 +311,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           }
         }
       } catch {
-        // Si el token guardado ya no es válido o el usuario no existe, limpiar sesión
         await clearApiSession();
         limpiarEstadoLocal();
       } finally {
@@ -268,7 +319,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     })();
   }, [applyRemoteTheme, cargarColeccionesHogar, limpiarEstadoLocal]);
 
-  // Auto-sincronización periódica para mantener 2 o más dispositivos/emuladores al día en vivo
   useEffect(() => {
     if (!usuario || isDemoMode || !getApiToken()) return;
     const interval = setInterval(() => {
@@ -306,6 +356,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setTareas([]);
         setCompras([]);
         setGastos([]);
+        setSuministros(SUMINISTROS_VACIOS);
         setParticipacion([]);
         setProgreso([]);
       }
@@ -316,9 +367,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // ───────────── Autenticación ─────────────
 
   const loginConPin = useCallback(
-    async (nombre: string, pin: string, codigoInvitacion?: string) => {
+    async (nombreOId: string, pin: string, codigoInvitacion?: string) => {
       const res = await api.loginConPin({
-        nombre: nombre.trim(),
+        nombre: nombreOId.trim(),
         pin: pin.trim(),
         codigo_invitacion: codigoInvitacion?.trim() || undefined,
       });
@@ -328,10 +379,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const registroConPin = useCallback(
-    async (nombre: string, pin: string) => {
+    async (nombre: string, pin: string, identificador_unico?: string) => {
       const res = await api.registroConPin({
         nombre: nombre.trim(),
         pin: pin.trim(),
+        identificador_unico: identificador_unico?.trim() || undefined,
       });
       await aplicarRespuestaAuth(res);
     },
@@ -339,20 +391,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const login = useCallback(
-    async (email: string, password: string) => {
-      const res = await api.login({ email: email.trim(), password });
+    async (emailOIdentificador: string, password: string) => {
+      const limpio = emailOIdentificador.trim();
+      const esId = limpio.startsWith('@') || !limpio.includes('@');
+      const res = await api.login({
+        email: esId ? undefined : limpio,
+        identificador_unico: esId ? limpio : undefined,
+        password,
+      });
       await aplicarRespuestaAuth(res);
     },
     [aplicarRespuestaAuth],
   );
 
   const registro = useCallback(
-    async (nombre: string, email: string, password: string, pin?: string) => {
+    async (
+      nombre: string,
+      email: string,
+      password: string,
+      opciones?: { identificador_unico?: string; pin?: string },
+    ) => {
       const res = await api.registro({
         nombre: nombre.trim(),
         email: email.trim(),
         password,
-        pin: pin?.trim() || undefined,
+        identificador_unico: opciones?.identificador_unico?.trim() || undefined,
+        pin: opciones?.pin?.trim() || undefined,
       });
       await aplicarRespuestaAuth(res);
     },
@@ -373,13 +437,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setTareas(MOCK_TAREAS);
     setCompras(MOCK_ITEMS_COMPRA);
     setGastos(MOCK_GASTOS);
+    setSuministros(MOCK_SUMINISTROS);
     setCategorias(MOCK_CATEGORIAS);
     setParticipacion(MOCK_PARTICIPACION);
     setProgreso(MOCK_PROGRESO_DIAS);
     applyRemoteTheme('noche_indigo');
   }, [applyRemoteTheme]);
 
-  // ───────────── Multi-Hogar ─────────────
+  // ───────────── Multi-Hogar & Invitaciones Dinámicas (TTL 5 min) ─────────────
 
   const crearHogar = useCallback(
     async (params: {
@@ -387,6 +452,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       tipoHogar: TipoHogar;
       nombreCreador?: string;
       pinCreador?: string;
+      identificadorCreador?: string;
     }) => {
       if (!usuario || !getApiToken() || isDemoMode) {
         if (!params.nombreCreador?.trim() || !params.pinCreador?.trim()) {
@@ -395,6 +461,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const resAuth = await api.accesoConPin({
           nombre: params.nombreCreador.trim(),
           pin: params.pinCreador.trim(),
+          identificador_unico: params.identificadorCreador?.trim() || undefined,
         });
         setUsuario(resAuth.usuario);
         setIsDemoMode(false);
@@ -414,7 +481,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const unirseHogar = useCallback(
-    async (params: { codigo: string; nombreMiembro?: string; pinMiembro?: string }) => {
+    async (params: {
+      codigo: string;
+      nombreMiembro?: string;
+      pinMiembro?: string;
+      identificadorMiembro?: string;
+    }) => {
       const codeClean = params.codigo.trim().toUpperCase();
       if (!usuario || !getApiToken() || isDemoMode) {
         if (!params.nombreMiembro?.trim() || !params.pinMiembro?.trim()) {
@@ -423,6 +495,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const resAuth = await api.accesoConPin({
           nombre: params.nombreMiembro.trim(),
           pin: params.pinMiembro.trim(),
+          identificador_unico: params.identificadorMiembro?.trim() || undefined,
         });
         setUsuario(resAuth.usuario);
         setIsDemoMode(false);
@@ -430,7 +503,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       const unido = await api.unirseHogar({ codigo: codeClean, codigo_invitacion: codeClean });
       setHogar(unido);
-      const miMembresia = unido.miembros.find((m) => m.id_usuario === (usuario?.id_usuario ?? unido.miembros[unido.miembros.length - 1]?.id_usuario));
+      const miMembresia = unido.miembros.find(
+        (m) => m.id_usuario === (usuario?.id_usuario ?? unido.miembros[unido.miembros.length - 1]?.id_usuario),
+      );
       setRol(unido.mi_rol ?? miMembresia?.rol ?? 'MIEMBRO');
       const lista = await api.getMisHogares();
       setMisHogares(lista);
@@ -475,7 +550,55 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [isDemoMode],
   );
 
-  // ───────────── Tareas ─────────────
+  const generarCodigoInvitacionTemporal = useCallback(
+    async (opciones?: {
+      rol?: RolMiembro;
+      puede_validar_tareas?: boolean;
+      puede_crear_tareas?: boolean;
+      puede_gestionar_compras?: boolean;
+    }): Promise<InvitacionTemporal> => {
+      if (isDemoMode) {
+        const expira = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+        return {
+          id_codigo: Date.now(),
+          codigo: 'NH-84K2',
+          rol_asignado: opciones?.rol ?? 'MIEMBRO',
+          expira_en: expira,
+          segundos_restantes: 300,
+        };
+      }
+      const inv = await api.generarCodigoTemporal(hogar?.id_hogar, opciones);
+      await recargarDatos();
+      return inv;
+    },
+    [isDemoMode, hogar?.id_hogar, recargarDatos],
+  );
+
+  // ───────────── Tareas (con Evidencia Fotográfica y Validación) ─────────────
+
+  const completarTareaConEvidencia = useCallback(
+    async (id_tarea: number, payload: { foto_base64?: string; uri?: string }) => {
+      if (isDemoMode) {
+        setTareas((prev) =>
+          prev.map((t) =>
+            t.id_tarea === id_tarea
+              ? {
+                  ...t,
+                  estado: 'EN_REVISION',
+                  evidencia_foto_url: payload.uri || (payload.foto_base64 ? `data:image/jpeg;base64,${payload.foto_base64}` : null),
+                  fecha_completada: new Date().toISOString(),
+                }
+              : t,
+          ),
+        );
+        return;
+      }
+
+      await api.completarTareaConEvidencia(id_tarea, payload);
+      await recargarDatos();
+    },
+    [isDemoMode, recargarDatos],
+  );
 
   const toggleTarea = useCallback(
     async (id_tarea: number) => {
@@ -494,10 +617,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       try {
-        if (actual.estado === 'COMPLETADA' || actual.estado === 'POR_VALIDAR') {
+        if (
+          actual.estado === 'COMPLETADA' ||
+          actual.estado === 'POR_VALIDAR' ||
+          actual.estado === 'EN_REVISION'
+        ) {
           const esJefe = rol === 'ADMINISTRADOR' || hogar?.tipo_hogar === 'COLABORATIVO';
-          if (actual.estado === 'POR_VALIDAR' && esJefe) {
-            await api.validarTarea(id_tarea);
+          if ((actual.estado === 'POR_VALIDAR' || actual.estado === 'EN_REVISION') && esJefe) {
+            await api.validarTarea(id_tarea, { aprobado: true });
           } else {
             await api.reabrirTarea(id_tarea);
           }
@@ -513,10 +640,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const validarTarea = useCallback(
-    async (id_tarea: number) => {
-      if (isDemoMode) return;
+    async (id_tarea: number, comentario_revision?: string) => {
+      if (isDemoMode) {
+        setTareas((prev) =>
+          prev.map((t) =>
+            t.id_tarea === id_tarea
+              ? { ...t, estado: 'COMPLETADA', comentario_revision: comentario_revision ?? null }
+              : t,
+          ),
+        );
+        return;
+      }
       try {
-        await api.validarTarea(id_tarea);
+        await api.validarTarea(id_tarea, { aprobado: true, comentario_revision });
         await recargarDatos();
       } catch (e: any) {
         Alert.alert('Error', e?.message || 'No se pudo validar la tarea');
@@ -526,10 +662,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const rechazarTarea = useCallback(
-    async (id_tarea: number) => {
-      if (isDemoMode) return;
+    async (id_tarea: number, comentario_revision?: string) => {
+      if (isDemoMode) {
+        setTareas((prev) =>
+          prev.map((t) =>
+            t.id_tarea === id_tarea
+              ? {
+                  ...t,
+                  estado: 'PENDIENTE',
+                  comentario_revision:
+                    comentario_revision || 'Evidencia rechazada. Vuelve a capturar la foto.',
+                }
+              : t,
+          ),
+        );
+        return;
+      }
       try {
-        await api.rechazarTarea(id_tarea);
+        await api.rechazarTarea(id_tarea, comentario_revision);
         await recargarDatos();
       } catch (e: any) {
         Alert.alert('Error', e?.message || 'No se pudo rechazar la tarea');
@@ -545,6 +695,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       id_asignado?: number | null;
       id_categoria?: number | null;
       puntos?: number;
+      requiere_foto?: boolean;
       fecha_limite?: string;
     }) => {
       if (isDemoMode) {
@@ -557,6 +708,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           titulo: dto.titulo,
           descripcion: dto.descripcion,
           puntos: dto.puntos ?? 10,
+          requiere_foto: dto.requiere_foto ?? true,
           estado: 'PENDIENTE',
           fecha_creacion: new Date().toISOString(),
           asignado: hogar?.miembros.find((m) => m.id_usuario === dto.id_asignado)?.usuario ?? null,
@@ -707,6 +859,100 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [isDemoMode],
   );
 
+  // ───────────── Suministros, Despensa y Monitor Exclusivo de Gas ─────────────
+
+  const agregarSuministro = useCallback(
+    async (dto: {
+      tipo: TipoSuministro;
+      nombre: string;
+      fecha_compra?: string;
+      dias_alerta_inicial?: number;
+      dias_alerta_critica?: number;
+      notas?: string;
+    }) => {
+      const fechaIso = dto.fecha_compra
+        ? new Date(dto.fecha_compra).toISOString()
+        : new Date().toISOString();
+
+      if (isDemoMode) {
+        const diasTranscurridos = Math.max(
+          0,
+          Math.floor((Date.now() - new Date(fechaIso).getTime()) / 86_400_000),
+        );
+        const dInicial = dto.dias_alerta_inicial ?? 14;
+        const dCritica = dto.dias_alerta_critica ?? 21;
+        const nuevo = {
+          id_suministro: Date.now(),
+          id_hogar: hogar?.id_hogar ?? 1,
+          id_comprador: usuario?.id_usuario ?? 1,
+          tipo: dto.tipo,
+          nombre: dto.nombre,
+          fecha_compra: fechaIso,
+          dias_alerta_inicial: dInicial,
+          dias_alerta_critica: dCritica,
+          activo: true,
+          notas: dto.notas ?? null,
+          dias_transcurridos: diasTranscurridos,
+          semanas_transcurridas: Number((diasTranscurridos / 7).toFixed(1)),
+          nivel_alerta:
+            diasTranscurridos >= dCritica
+              ? ('CRITICO_3_SEMANAS' as const)
+              : diasTranscurridos >= dInicial
+              ? ('ADVERTENCIA_2_SEMANAS' as const)
+              : ('NORMAL' as const),
+          comprador: usuario ?? MOCK_USUARIOS[0],
+        };
+
+        setSuministros((prev) => {
+          if (dto.tipo === 'GAS') {
+            const nuevoHistorial = prev.gas_activo
+              ? [{ ...prev.gas_activo, activo: false }, ...prev.historial_gas]
+              : prev.historial_gas;
+            return {
+              ...prev,
+              gas_activo: nuevo,
+              historial_gas: nuevoHistorial,
+            };
+          }
+          return {
+            ...prev,
+            despensa: [nuevo, ...prev.despensa],
+          };
+        });
+      } else {
+        await api.crearSuministro({ ...dto, fecha_compra: fechaIso }, hogar?.id_hogar);
+        await recargarDatos();
+      }
+
+      if (dto.tipo === 'GAS') {
+        await programarAlertasGas(dto.nombre, fechaIso);
+      } else {
+        await programarAlertaDespensa(dto.nombre, fechaIso, dto.dias_alerta_inicial ?? 14);
+      }
+    },
+    [isDemoMode, hogar?.id_hogar, usuario, recargarDatos],
+  );
+
+  const eliminarSuministro = useCallback(
+    async (id_suministro: number) => {
+      if (isDemoMode) {
+        setSuministros((prev) => ({
+          ...prev,
+          despensa: prev.despensa.filter((d) => d.id_suministro !== id_suministro),
+          historial_gas: prev.historial_gas.filter((g) => g.id_suministro !== id_suministro),
+        }));
+        return;
+      }
+      try {
+        await api.eliminarSuministro(id_suministro, hogar?.id_hogar);
+        await recargarDatos();
+      } catch (e: any) {
+        Alert.alert('Aviso', e?.message || 'No se pudo eliminar el suministro');
+      }
+    },
+    [isDemoMode, hogar?.id_hogar, recargarDatos],
+  );
+
   // ───────────── Gastos ─────────────
 
   const agregarGasto = useCallback(
@@ -796,6 +1042,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [isDemoMode],
   );
 
+  const actualizarIdentificadorPerfil = useCallback(
+    async (nuevoId: string) => {
+      if (isDemoMode) return;
+      const actualizado = await api.updatePerfil({ identificador_unico: nuevoId.trim() });
+      setUsuario(actualizado);
+      await recargarDatos();
+    },
+    [isDemoMode, recargarDatos],
+  );
+
   const invitarMiembro = useCallback(
     async (
       rolAsignado: RolMiembro,
@@ -818,9 +1074,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         });
         setHogar(actualizado);
         await recargarDatos();
-        return { codigo_invitacion: actualizado.codigo_invitacion };
+        return {
+          codigo_invitacion:
+            actualizado.codigo_temporal?.codigo ??
+            actualizado.invitacion_temporal?.codigo ??
+            actualizado.codigo_invitacion,
+          expira_en:
+            actualizado.codigo_temporal?.expira_en ??
+            actualizado.invitacion_temporal?.expira_en,
+          segundos_restantes:
+            actualizado.codigo_temporal?.segundos_restantes ??
+            actualizado.invitacion_temporal?.segundos_restantes,
+        };
       }
-      return { codigo_invitacion: hogar?.codigo_invitacion ?? 'DEMO01' };
+      return { codigo_invitacion: hogar?.codigo_invitacion ?? 'DEMO01', segundos_restantes: 300 };
     },
     [isDemoMode, hogar, recargarDatos],
   );
@@ -885,7 +1152,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const validacionesPendientesCount = useMemo(() => {
-    const tCount = tareas.filter((t) => t.estado === 'POR_VALIDAR' || t.estado === 'PROPUESTA').length;
+    const tCount = tareas.filter(
+      (t) =>
+        t.estado === 'EN_REVISION' ||
+        t.estado === 'POR_VALIDAR' ||
+        t.estado === 'PROPUESTA',
+    ).length;
     const cCount = compras.filter(
       (c) => c.estado_validacion === 'PENDIENTE_APROBACION' || c.estado_validacion === 'COMPRA_POR_VALIDAR',
     ).length;
@@ -904,6 +1176,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     tareas,
     compras,
     gastos,
+    suministros,
     categorias,
     participacion,
     progreso,
@@ -924,9 +1197,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     seleccionarHogar,
     salirHogarActual,
     cambiarTipoHogar,
+    generarCodigoInvitacionTemporal,
     activarModoDemo,
     recargarDatos,
     toggleTarea,
+    completarTareaConEvidencia,
     validarTarea,
     rechazarTarea,
     agregarTarea,
@@ -938,12 +1213,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     eliminarCompra,
     limpiarComprados,
     agregarCategoriaCompra,
+    agregarSuministro,
+    eliminarSuministro,
     agregarGasto,
     validarGasto,
     rechazarGasto,
     eliminarGasto,
     actualizarDisponibilidad,
     actualizarPinPerfil,
+    actualizarIdentificadorPerfil,
     invitarMiembro,
     cambiarPermisosMiembro,
     eliminarMiembroHogar,

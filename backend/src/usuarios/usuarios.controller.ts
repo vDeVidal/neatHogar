@@ -3,7 +3,11 @@ import * as bcrypt from 'bcryptjs';
 import { UsuarioActual, UsuarioAutenticado } from '../auth/usuario-actual.decorator';
 import { PrismaService } from '../prisma/prisma.service';
 import { HogaresService } from '../hogares/hogares.service';
-import { normalizarNombreLogin, SELECT_USUARIO_PUBLICO } from '../common/constantes';
+import {
+  normalizarIdentificadorUnico,
+  normalizarNombreLogin,
+  SELECT_USUARIO_PUBLICO,
+} from '../common/constantes';
 import { ActualizarPerfilDto } from './dto/usuario.dto';
 
 @Controller('usuarios')
@@ -37,10 +41,10 @@ export class UsuariosController {
     };
   }
 
-  /** Actualiza disponibilidad, descripción de carga, nombre, PIN o tema preferido. */
+  /** Actualiza disponibilidad, descripción de carga, nombre, identificador_unico, PIN o tema preferido. */
   @Patch('me')
   async actualizar(@UsuarioActual() u: UsuarioAutenticado, @Body() dto: ActualizarPerfilDto) {
-    const { pin, nombre, ...resto } = dto;
+    const { pin, nombre, identificador_unico, ...resto } = dto;
     const data: Record<string, unknown> = { ...resto };
 
     if (nombre !== undefined) {
@@ -54,6 +58,17 @@ export class UsuariosController {
       }
       data.nombre = limpio;
       data.nombre_login = nombre_login;
+    }
+
+    if (identificador_unico !== undefined) {
+      const idNorm = normalizarIdentificadorUnico(identificador_unico);
+      const colisionId = await this.prisma.usuario.findFirst({
+        where: { identificador_unico: idNorm, NOT: { id_usuario: u.id_usuario } },
+      });
+      if (colisionId) {
+        throw new ConflictException(`El identificador ${idNorm} ya está en uso.`);
+      }
+      data.identificador_unico = idNorm;
     }
 
     if (pin !== undefined) {

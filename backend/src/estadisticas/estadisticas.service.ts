@@ -50,7 +50,9 @@ export class EstadisticasService {
           .filter(
             (c) =>
               c.id_asignado === m.id_usuario &&
-              (c.estado === EstadoTarea.PENDIENTE || c.estado === EstadoTarea.POR_VALIDAR),
+              (c.estado === EstadoTarea.PENDIENTE ||
+                c.estado === EstadoTarea.POR_VALIDAR ||
+                c.estado === EstadoTarea.EN_REVISION),
           )
           .reduce((acc, c) => acc + c._count._all, 0);
         const porcentaje_esperado = Math.round((PESO_DISPONIBILIDAD[m.usuario.disponibilidad] / totalPeso) * 100);

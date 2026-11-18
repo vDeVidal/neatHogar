@@ -2,12 +2,17 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  GoneException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { EstadoTarea, EstadoValidacion, RolMiembro, TipoHogar } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { normalizarNombreLogin, SELECT_USUARIO_PUBLICO } from '../common/constantes';
+import {
+  normalizarIdentificadorUnico,
+  normalizarNombreLogin,
+  SELECT_USUARIO_PUBLICO,
+} from '../common/constantes';
 import {
   ActualizarTipoHogarDto,
   CambiarRolDto,
@@ -16,7 +21,8 @@ import {
   UnirseHogarDto,
 } from './dto/hogar.dto';
 
-const ALFABETO_CODIGO = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // sin 0/O/1/I para evitar confusiones
+const ALFABETO_CODIGO = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const TTL_INVITACION_MS = 5 * 60 * 1000; // 5 minutos exactos (300s)
 
 @Injectable()
 export class HogaresService {
@@ -24,10 +30,6 @@ export class HogaresService {
 
   // ───────────────────────── Helpers reutilizados por otros módulos ─────────────────────────
 
-  /**
-   * Retorna la membresía activa del usuario junto con los datos del hogar.
-   * Prioriza id_hogar_preferido (cabecera x-hogar-id), luego usuario.id_hogar_activo y por último la más reciente.
-   */
   async obtenerMembresia(id_usuario: number, id_hogar_preferido?: number) {
     if (id_hogar_preferido) {
       const preferida = await this.prisma.miembroHogar.findUnique({
@@ -59,10 +61,12 @@ export class HogaresService {
       throw new NotFoundException('Aún no perteneces a un núcleo familiar');
     }
 
-    await this.prisma.usuario.update({
-      where: { id_usuario },
-      data: { id_hogar_activo: primera.id_hogar },
-    }).catch(() => undefined);
+    await this.prisma.usuario
+      .update({
+        where: { id_usuario },
+        data: { id_hogar_activo: primera.id_hogar },
+      })
+      .catch(() => undefined);
 
     return primera;
   }
@@ -75,7 +79,6 @@ export class HogaresService {
     return membresia;
   }
 
-  /** Verifica que un usuario pertenezca al hogar indicado. */
   async verificarPertenencia(id_usuario: number, id_hogar: number) {
     const m = await this.prisma.miembroHogar.findUnique({
       where: { id_usuario_id_hogar: { id_usuario, id_hogar } },
@@ -86,7 +89,6 @@ export class HogaresService {
 
   // ───────────────────────── Casos de uso Multi-Hogar ─────────────────────────
 
-  /** Lista todos los hogares a los que pertenece el usuario para acceso rápido en Inicio y Header. */
   async listarMisHogares(id_usuario: number) {
     const membresias = await this.prisma.miembroHogar.findMany({
       where: { id_usuario },
@@ -106,7 +108,9 @@ export class HogaresService {
           this.prisma.tarea.count({
             where: {
               id_hogar: m.id_hogar,
-              estado: { in: [EstadoTarea.POR_VALIDAR, EstadoTarea.PROPUESTA] },
+              estado: {
+                in: [EstadoTarea.EN_REVISION, EstadoTarea.POR_VALIDAR, EstadoTarea.PROPUESTA],
+              },
             },
           }),
           this.prisma.itemCompra.count({
@@ -145,7 +149,6 @@ export class HogaresService {
     return resultados;
   }
 
-  /** Cambia el hogar activo del usuario y devuelve su detalle completo. */
   async activar(id_usuario: number, id_hogar: number) {
     await this.verificarPertenencia(id_usuario, id_hogar);
     await this.prisma.usuario.update({
@@ -157,11 +160,14 @@ export class HogaresService {
 
   async crear(id_usuario: number, dto: CrearHogarDto) {
     const tipo_hogar = dto.tipo_hogar ?? TipoHogar.COLABORATIVO;
+    const codigoBase = await this.generarCodigoUnico();
+    const expiraEn = new Date(Date.now() + TTL_INVITACION_MS);
+
     const hogar = await this.prisma.hogar.create({
       data: {
         nombre: dto.nombre.trim(),
         tipo_hogar,
-        codigo_invitacion: await this.generarCodigoUnico(),
+        codigo_invitacion: codigoBase,
         miembros: {
           create: {
             id_usuario,
@@ -169,6 +175,17 @@ export class HogaresService {
             puede_validar_tareas: true,
             puede_crear_tareas: true,
             puede_gestionar_compras: true,
+          },
+        },
+        codigos_invitacion: {
+          create: {
+            codigo: codigoBase,
+            id_creador: id_usuario,
+            rol_asignado: RolMiembro.MIEMBRO,
+            puede_validar_tareas: tipo_hogar === TipoHogar.COLABORATIVO,
+            puede_crear_tareas: tipo_hogar === TipoHogar.COLABORATIVO,
+            puede_gestionar_compras: tipo_hogar === TipoHogar.COLABORATIVO,
+            expira_en: expiraEn,
           },
         },
       },
@@ -180,16 +197,170 @@ export class HogaresService {
     return this.detalle(hogar.id_hogar, id_usuario);
   }
 
+  // ───────────────────────── Invitaciones Dinámicas Efímeras (TTL 5 min) ─────────────────────────
+
+  /**
+   * Genera un código dinámico de invitación con vigencia exacta de 5 minutos (300 segundos).
+   * Invalida códigos anteriores no usados del mismo creador en ese hogar.
+   */
+  async generarCodigoTemporal(
+    id_admin: number,
+    id_hogar_objetivo?: number,
+    dto?: InvitarMiembroDto,
+  ) {
+    const admin = await this.exigirAdministrador(id_admin, id_hogar_objetivo);
+    const id_hogar = admin.id_hogar;
+    const esColaborativo = admin.hogar.tipo_hogar === TipoHogar.COLABORATIVO;
+    const rolAsignado = dto?.rol ?? RolMiembro.MIEMBRO;
+    const esRolAdmin = rolAsignado === RolMiembro.ADMINISTRADOR;
+
+    await this.prisma.codigoInvitacion.updateMany({
+      where: { id_hogar, id_creador: id_admin, usado: false },
+      data: { usado: true },
+    });
+
+    const nuevoCodigo = await this.generarCodigoUnico();
+    const ahora = new Date();
+    const expira_en = new Date(ahora.getTime() + TTL_INVITACION_MS);
+
+    const registro = await this.prisma.codigoInvitacion.create({
+      data: {
+        codigo: nuevoCodigo,
+        id_hogar,
+        id_creador: id_admin,
+        rol_asignado: rolAsignado,
+        puede_validar_tareas: esRolAdmin ? true : (dto?.puede_validar_tareas ?? esColaborativo),
+        puede_crear_tareas: esRolAdmin ? true : (dto?.puede_crear_tareas ?? esColaborativo),
+        puede_gestionar_compras: esRolAdmin ? true : (dto?.puede_gestionar_compras ?? esColaborativo),
+        creado_en: ahora,
+        expira_en,
+        usado: false,
+      },
+    });
+
+    // Si no es un hogar demo fijo (DEMO01 / FAMI01), sincronizar el código visible del hogar con el código temporal activo
+    if (
+      admin.hogar.codigo_invitacion !== 'DEMO01' &&
+      admin.hogar.codigo_invitacion !== 'FAMI01'
+    ) {
+      await this.prisma.hogar
+        .update({
+          where: { id_hogar },
+          data: { codigo_invitacion: nuevoCodigo },
+        })
+        .catch(() => undefined);
+    }
+
+    return {
+      id_codigo: registro.id_codigo,
+      codigo: registro.codigo,
+      codigo_invitacion: registro.codigo,
+      id_hogar,
+      rol_asignado: registro.rol_asignado,
+      creado_en: registro.creado_en,
+      expira_en: registro.expira_en,
+      segundos_restantes: 300,
+    };
+  }
+
+  /** Retorna el código temporal activo del hogar (si aún no ha expirado). */
+  async obtenerInvitacionActiva(id_usuario: number, id_hogar_preferido?: number) {
+    const membresia = await this.obtenerMembresia(id_usuario, id_hogar_preferido);
+    const ahora = new Date();
+
+    const activa = await this.prisma.codigoInvitacion.findFirst({
+      where: {
+        id_hogar: membresia.id_hogar,
+        usado: false,
+        expira_en: { gt: ahora },
+      },
+      orderBy: { creado_en: 'desc' },
+    });
+
+    if (!activa) {
+      return {
+        activa: false,
+        codigo: null,
+        expira_en: null,
+        segundos_restantes: 0,
+      };
+    }
+
+    const segundos_restantes = Math.max(
+      0,
+      Math.ceil((activa.expira_en.getTime() - ahora.getTime()) / 1000),
+    );
+
+    return {
+      activa: segundos_restantes > 0,
+      id_codigo: activa.id_codigo,
+      codigo: activa.codigo,
+      rol_asignado: activa.rol_asignado,
+      creado_en: activa.creado_en,
+      expira_en: activa.expira_en,
+      segundos_restantes,
+    };
+  }
+
+  /**
+   * Une al usuario a un hogar mediante código temporal (TTL 5 minutos) o código de hogar.
+   * Si el código pertenece a CodigoInvitacion y ya expiró, retorna 410 Gone.
+   */
   async unirse(id_usuario: number, dto: UnirseHogarDto) {
-    const codigoBuscado = (dto.codigo || dto.codigo_invitacion || '').trim().toUpperCase();
-    if (!codigoBuscado) {
+    const raw = (dto.codigo || dto.codigo_invitacion || '').trim().toUpperCase();
+    const codigoLimpio = raw.replace(/^NH-/, '');
+    if (!raw) {
       throw new BadRequestException('Debes ingresar el código de invitación del hogar');
     }
 
-    const hogar = await this.prisma.hogar.findUnique({
-      where: { codigo_invitacion: codigoBuscado },
-    });
-    if (!hogar) throw new NotFoundException('Código de invitación no válido o no encontrado');
+    // 1. Buscar primero en la tabla de códigos dinámicos efímeros (TTL 5 min)
+    const invTemporal =
+      (await this.prisma.codigoInvitacion.findUnique({ where: { codigo: raw } })) ??
+      (await this.prisma.codigoInvitacion.findUnique({ where: { codigo: codigoLimpio } }));
+
+    if (invTemporal) {
+      const ahora = new Date();
+      if (invTemporal.usado || ahora > invTemporal.expira_en) {
+        throw new GoneException(
+          'El código de invitación ha expirado (límite de 5 minutos). Solicita uno nuevo al propietario.',
+        );
+      }
+
+      const yaMiembro = await this.prisma.miembroHogar.findUnique({
+        where: {
+          id_usuario_id_hogar: { id_usuario, id_hogar: invTemporal.id_hogar },
+        },
+      });
+
+      if (!yaMiembro) {
+        await this.prisma.miembroHogar.create({
+          data: {
+            id_usuario,
+            id_hogar: invTemporal.id_hogar,
+            rol: invTemporal.rol_asignado,
+            puede_validar_tareas: invTemporal.puede_validar_tareas,
+            puede_crear_tareas: invTemporal.puede_crear_tareas,
+            puede_gestionar_compras: invTemporal.puede_gestionar_compras,
+          },
+        });
+      }
+
+      await this.prisma.usuario.update({
+        where: { id_usuario },
+        data: { id_hogar_activo: invTemporal.id_hogar },
+      });
+
+      return this.detalle(invTemporal.id_hogar, id_usuario);
+    }
+
+    // 2. Fallback a código de hogar (p. ej. hogares demo DEMO01 / FAMI01)
+    const hogar =
+      (await this.prisma.hogar.findUnique({ where: { codigo_invitacion: raw } })) ??
+      (await this.prisma.hogar.findUnique({ where: { codigo_invitacion: codigoLimpio } }));
+
+    if (!hogar) {
+      throw new NotFoundException('Código de invitación no válido o no encontrado');
+    }
 
     const yaMiembro = await this.prisma.miembroHogar.findUnique({
       where: { id_usuario_id_hogar: { id_usuario, id_hogar: hogar.id_hogar } },
@@ -244,12 +415,20 @@ export class HogaresService {
     return this.detalle(admin.id_hogar, id_admin);
   }
 
-  /** Añade directamente a un usuario ya registrado (por nombre o email) o retorna el código de invitación. */
+  /**
+   * Si se indica nombre/@identificador o email, vincula al usuario existente;
+   * si no se indica, genera un nuevo código de invitación temporal de 5 minutos.
+   */
   async invitar(id_admin: number, dto: InvitarMiembroDto, id_hogar_preferido?: number) {
     const admin = await this.exigirAdministrador(id_admin, id_hogar_preferido);
 
     if (!dto.email?.trim() && !dto.nombre?.trim()) {
-      return this.detalle(admin.id_hogar, id_admin);
+      const codigoTemp = await this.generarCodigoTemporal(id_admin, admin.id_hogar, dto);
+      const detalleHogar = await this.detalle(admin.id_hogar, id_admin);
+      return {
+        ...detalleHogar,
+        codigo_temporal: codigoTemp,
+      };
     }
 
     let usuario = null;
@@ -258,17 +437,20 @@ export class HogaresService {
         where: { email: dto.email.trim().toLowerCase() },
       });
     } else if (dto.nombre?.trim()) {
-      const nombre_login = normalizarNombreLogin(dto.nombre);
+      const raw = dto.nombre.trim();
+      const idNorm = normalizarIdentificadorUnico(raw);
+      const nombre_login = normalizarNombreLogin(raw.replace(/^@+/, ''));
       usuario =
+        (await this.prisma.usuario.findUnique({ where: { identificador_unico: idNorm } })) ??
         (await this.prisma.usuario.findUnique({ where: { nombre_login } })) ??
         (await this.prisma.usuario.findFirst({
-          where: { nombre: { equals: dto.nombre.trim(), mode: 'insensitive' } },
+          where: { nombre: { equals: raw.replace(/^@+/, ''), mode: 'insensitive' } },
         }));
     }
 
     if (!usuario) {
       throw new NotFoundException(
-        'No encontramos una cuenta con ese nombre/correo. Comparte el código de vinculación para que se una.',
+        'No encontramos una cuenta con ese nombre/@identificador. Genera el código temporal de 5 minutos para que se una.',
       );
     }
 
@@ -298,10 +480,7 @@ export class HogaresService {
 
   async regenerarCodigo(id_admin: number, id_hogar_preferido?: number) {
     const admin = await this.exigirAdministrador(id_admin, id_hogar_preferido);
-    await this.prisma.hogar.update({
-      where: { id_hogar: admin.id_hogar },
-      data: { codigo_invitacion: await this.generarCodigoUnico() },
-    });
+    await this.generarCodigoTemporal(id_admin, admin.id_hogar);
     return this.detalle(admin.id_hogar, id_admin);
   }
 
@@ -338,7 +517,6 @@ export class HogaresService {
     return this.detalle(admin.id_hogar, id_admin);
   }
 
-  /** El usuario abandona su hogar actual. Si era el último miembro, el hogar se elimina. */
   async salir(id_usuario: number, id_hogar_preferido?: number) {
     const m = await this.obtenerMembresia(id_usuario, id_hogar_preferido);
     const total = await this.prisma.miembroHogar.count({ where: { id_hogar: m.id_hogar } });
@@ -385,14 +563,38 @@ export class HogaresService {
     });
     const pendientes = await this.prisma.tarea.groupBy({
       by: ['id_asignado'],
-      where: { id_hogar, estado: { in: [EstadoTarea.PENDIENTE, EstadoTarea.POR_VALIDAR] } },
+      where: {
+        id_hogar,
+        estado: {
+          in: [EstadoTarea.PENDIENTE, EstadoTarea.EN_REVISION, EstadoTarea.POR_VALIDAR],
+        },
+      },
       _count: { _all: true },
     });
     const mapaPendientes = new Map(pendientes.map((p) => [p.id_asignado, p._count._all]));
     const miRol = hogar.miembros.find((m) => m.id_usuario === id_usuario)?.rol ?? null;
+
+    const ahora = new Date();
+    const codigoActivo = await this.prisma.codigoInvitacion.findFirst({
+      where: { id_hogar, usado: false, expira_en: { gt: ahora } },
+      orderBy: { creado_en: 'desc' },
+    });
+
     return {
       ...hogar,
       mi_rol: miRol,
+      invitacion_temporal: codigoActivo
+        ? {
+            id_codigo: codigoActivo.id_codigo,
+            codigo: codigoActivo.codigo,
+            rol_asignado: codigoActivo.rol_asignado,
+            expira_en: codigoActivo.expira_en,
+            segundos_restantes: Math.max(
+              0,
+              Math.ceil((codigoActivo.expira_en.getTime() - ahora.getTime()) / 1000),
+            ),
+          }
+        : null,
       miembros: hogar.miembros.map((m) => ({
         ...m,
         tareas_pendientes: mapaPendientes.get(m.id_usuario) ?? 0,
@@ -421,8 +623,11 @@ export class HogaresService {
         { length: 6 },
         () => ALFABETO_CODIGO[Math.floor(Math.random() * ALFABETO_CODIGO.length)],
       ).join('');
-      const existe = await this.prisma.hogar.findUnique({ where: { codigo_invitacion: codigo } });
-      if (!existe) return codigo;
+      const [existeHogar, existeTemp] = await Promise.all([
+        this.prisma.hogar.findUnique({ where: { codigo_invitacion: codigo } }),
+        this.prisma.codigoInvitacion.findUnique({ where: { codigo } }),
+      ]);
+      if (!existeHogar && !existeTemp) return codigo;
     }
     throw new ConflictException('No fue posible generar un código único, intenta nuevamente');
   }

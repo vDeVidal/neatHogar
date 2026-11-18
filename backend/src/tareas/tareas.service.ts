@@ -1,14 +1,23 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { EstadoTarea, Prisma, RolMiembro, TipoCategoria, TipoHogar } from '@prisma/client';
+import * as fs from 'fs';
+import { join } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
 import { HogaresService } from '../hogares/hogares.service';
 import { SELECT_USUARIO_PUBLICO } from '../common/constantes';
-import { ActualizarTareaDto, CrearTareaDto, FiltroTareasDto } from './dto/tarea.dto';
+import {
+  ActualizarTareaDto,
+  CompletarConEvidenciaDto,
+  CrearTareaDto,
+  FiltroTareasDto,
+  ValidarTareaDto,
+} from './dto/tarea.dto';
 
 const INCLUDE_TAREA = {
   asignado: { select: SELECT_USUARIO_PUBLICO },
-  creador: { select: { id_usuario: true, nombre: true } },
-  completador: { select: { id_usuario: true, nombre: true } },
+  creador: { select: { id_usuario: true, nombre: true, identificador_unico: true } },
+  completador: { select: { id_usuario: true, nombre: true, identificador_unico: true } },
+  validador: { select: { id_usuario: true, nombre: true, identificador_unico: true } },
   categoria: true,
 } satisfies Prisma.TareaInclude;
 
@@ -40,7 +49,6 @@ export class TareasService {
     const { id_hogar, hogar } = membresia;
     await this.validarReferencias(id_hogar, dto.id_asignado, dto.id_categoria);
 
-    // En hogar JEFE_DE_HOGAR, si no es Jefe ni tiene permiso explícito de crear tareas, se crea como PROPUESTA
     const requiereAprobacion =
       hogar.tipo_hogar === TipoHogar.JEFE_DE_HOGAR &&
       membresia.rol !== RolMiembro.ADMINISTRADOR &&
@@ -55,6 +63,7 @@ export class TareasService {
         id_asignado: dto.id_asignado ?? null,
         id_categoria: dto.id_categoria ?? null,
         puntos: dto.puntos ?? 10,
+        requiere_foto: dto.requiere_foto ?? true,
         estado: requiereAprobacion ? EstadoTarea.PROPUESTA : EstadoTarea.PENDIENTE,
         fecha_limite: dto.fecha_limite ? new Date(dto.fecha_limite) : null,
       },
@@ -80,6 +89,7 @@ export class TareasService {
         id_asignado: dto.id_asignado,
         id_categoria: dto.id_categoria,
         puntos: dto.puntos,
+        requiere_foto: dto.requiere_foto,
         fecha_limite:
           dto.fecha_limite === undefined ? undefined : dto.fecha_limite ? new Date(dto.fecha_limite) : null,
       },
@@ -88,12 +98,62 @@ export class TareasService {
   }
 
   /**
-   * Marca la tarea como realizada:
-   * - En hogar COLABORATIVO o si es Jefe de Hogar (ADMINISTRADOR) / tiene permiso `puede_validar_tareas`:
-   *   pasa directo a COMPLETADA y suma los puntos.
-   * - En hogar JEFE_DE_HOGAR siendo MIEMBRO sin permiso de autovalidar:
-   *   pasa a POR_VALIDAR para que el Jefe de Hogar apruebe y entregue los puntos.
+   * POST /api/tareas/:idTarea/completar-con-evidencia
+   * Recibe archivo fotográfico (multipart/form-data o base64), lo almacena en /uploads/evidencias/,
+   * coloca la tarea en estado EN_REVISION y retiene los puntos hasta la aprobación del Administrador/Padre.
    */
+  async completarConEvidencia(
+    id_usuario: number,
+    id_tarea: number,
+    archivo: { filename?: string; buffer?: Buffer; originalname?: string } | undefined,
+    dto: CompletarConEvidenciaDto,
+    id_hogar_preferido?: number,
+  ) {
+    const membresia = await this.hogares.obtenerMembresia(id_usuario, id_hogar_preferido);
+    const tarea = await this.buscarEnHogar(id_tarea, membresia.id_hogar);
+
+    if (tarea.estado === EstadoTarea.COMPLETADA) {
+      throw new BadRequestException('La tarea ya está completada y validada');
+    }
+
+    let evidenciaUrl = dto?.evidencia_foto_url?.trim() || null;
+    const evidenciasDir = join(process.cwd(), 'uploads', 'evidencias');
+    fs.mkdirSync(evidenciasDir, { recursive: true });
+
+    if (archivo?.filename) {
+      evidenciaUrl = `/uploads/evidencias/${archivo.filename}`;
+    } else if (archivo?.buffer) {
+      const ext = (archivo.originalname?.split('.').pop() || 'jpg').replace(/[^a-z0-9]/gi, '');
+      const nombreArchivo = `tarea_${id_tarea}_${Date.now()}.${ext || 'jpg'}`;
+      fs.writeFileSync(join(evidenciasDir, nombreArchivo), archivo.buffer);
+      evidenciaUrl = `/uploads/evidencias/${nombreArchivo}`;
+    } else if (dto?.foto_base64) {
+      const rawBase64 = dto.foto_base64.replace(/^data:image\/\w+;base64,/, '');
+      const nombreArchivo = `tarea_${id_tarea}_${Date.now()}.jpg`;
+      fs.writeFileSync(join(evidenciasDir, nombreArchivo), Buffer.from(rawBase64, 'base64'));
+      evidenciaUrl = `/uploads/evidencias/${nombreArchivo}`;
+    }
+
+    if (!evidenciaUrl) {
+      throw new BadRequestException('Debes adjuntar una fotografía como evidencia de la tarea realizada');
+    }
+
+    const responsable = tarea.id_asignado ?? id_usuario;
+
+    return this.prisma.tarea.update({
+      where: { id_tarea },
+      data: {
+        estado: EstadoTarea.EN_REVISION,
+        evidencia_foto_url: evidenciaUrl,
+        comentario_revision: null,
+        fecha_completada: new Date(),
+        id_asignado: responsable,
+        id_completador: id_usuario,
+      },
+      include: INCLUDE_TAREA,
+    });
+  }
+
   async completar(id_usuario: number, id_tarea: number, id_hogar_preferido?: number) {
     const membresia = await this.hogares.obtenerMembresia(id_usuario, id_hogar_preferido);
     const tarea = await this.buscarEnHogar(id_tarea, membresia.id_hogar);
@@ -118,7 +178,7 @@ export class TareasService {
       });
     }
 
-    if (tarea.estado === EstadoTarea.POR_VALIDAR) {
+    if (tarea.estado === EstadoTarea.POR_VALIDAR || tarea.estado === EstadoTarea.EN_REVISION) {
       if (!puedeValidar) {
         throw new ForbiddenException('Esta tarea ya fue enviada y está esperando validación del Jefe de Hogar');
       }
@@ -128,7 +188,10 @@ export class TareasService {
           where: { id_tarea },
           data: {
             estado: EstadoTarea.COMPLETADA,
-            fecha_completada: new Date(),
+            fecha_completada: tarea.fecha_completada ?? new Date(),
+            fecha_validacion: new Date(),
+            id_validador: id_usuario,
+            comentario_revision: null,
             id_asignado: tarea.id_asignado ?? responsable,
           },
           include: INCLUDE_TAREA,
@@ -138,14 +201,14 @@ export class TareasService {
       return actualizada;
     }
 
-    // Estado PENDIENTE:
     const responsable = tarea.id_asignado ?? id_usuario;
     if (!puedeValidar) {
-      // Miembro en JEFE_DE_HOGAR: solicita validación al Jefe de Hogar
       return this.prisma.tarea.update({
         where: { id_tarea },
         data: {
-          estado: EstadoTarea.POR_VALIDAR,
+          estado: EstadoTarea.EN_REVISION,
+          fecha_completada: new Date(),
+          comentario_revision: null,
           id_asignado: responsable,
           id_completador: id_usuario,
         },
@@ -159,6 +222,9 @@ export class TareasService {
         data: {
           estado: EstadoTarea.COMPLETADA,
           fecha_completada: new Date(),
+          fecha_validacion: new Date(),
+          id_validador: id_usuario,
+          comentario_revision: null,
           id_asignado: responsable,
           id_completador: id_usuario,
         },
@@ -169,8 +235,21 @@ export class TareasService {
     return actualizada;
   }
 
-  /** Valida explícitamente una tarea PROPUESTA (-> PENDIENTE) o POR_VALIDAR (-> COMPLETADA + puntos). */
-  async validar(id_usuario: number, id_tarea: number, id_hogar_preferido?: number) {
+  /**
+   * PATCH /api/tareas/:idTarea/validar
+   * Si aprobado === false, devuelve la tarea a PENDIENTE con comentario_revision.
+   * Si aprobado !== false, aprueba la tarea (-> COMPLETADA) y acredita los puntos al miembro.
+   */
+  async validar(
+    id_usuario: number,
+    id_tarea: number,
+    dto?: ValidarTareaDto,
+    id_hogar_preferido?: number,
+  ) {
+    if (dto?.aprobado === false) {
+      return this.rechazar(id_usuario, id_tarea, dto.comentario_revision, id_hogar_preferido);
+    }
+
     const membresia = await this.hogares.obtenerMembresia(id_usuario, id_hogar_preferido);
     const puedeValidar =
       membresia.rol === RolMiembro.ADMINISTRADOR ||
@@ -178,7 +257,7 @@ export class TareasService {
       membresia.puede_validar_tareas;
 
     if (!puedeValidar) {
-      throw new ForbiddenException('Solo el Jefe de Hogar puede validar tareas en este hogar');
+      throw new ForbiddenException('Solo el Jefe de Hogar / Administrador puede validar tareas');
     }
 
     const tarea = await this.buscarEnHogar(id_tarea, membresia.id_hogar);
@@ -186,7 +265,7 @@ export class TareasService {
     if (tarea.estado === EstadoTarea.PROPUESTA) {
       return this.prisma.tarea.update({
         where: { id_tarea },
-        data: { estado: EstadoTarea.PENDIENTE },
+        data: { estado: EstadoTarea.PENDIENTE, comentario_revision: null },
         include: INCLUDE_TAREA,
       });
     }
@@ -201,7 +280,10 @@ export class TareasService {
         where: { id_tarea },
         data: {
           estado: EstadoTarea.COMPLETADA,
-          fecha_completada: new Date(),
+          fecha_completada: tarea.fecha_completada ?? new Date(),
+          fecha_validacion: new Date(),
+          id_validador: id_usuario,
+          comentario_revision: dto?.comentario_revision?.trim() || null,
           id_asignado: tarea.id_asignado ?? responsable,
           id_completador: tarea.id_completador ?? id_usuario,
         },
@@ -212,18 +294,27 @@ export class TareasService {
     return actualizada;
   }
 
-  /** Rechaza una tarea PROPUESTA (la elimina) o devuelve una tarea POR_VALIDAR a PENDIENTE sin otorgar puntos. */
-  async rechazar(id_usuario: number, id_tarea: number, id_hogar_preferido?: number) {
+  /**
+   * Rechaza una tarea PROPUESTA (la elimina) o devuelve una tarea EN_REVISION / POR_VALIDAR
+   * a estado PENDIENTE guardando comentario_revision para que el miembro sepa qué corregir.
+   */
+  async rechazar(
+    id_usuario: number,
+    id_tarea: number,
+    comentario_revision?: string,
+    id_hogar_preferido?: number,
+  ) {
     const membresia = await this.hogares.obtenerMembresia(id_usuario, id_hogar_preferido);
     const tarea = await this.buscarEnHogar(id_tarea, membresia.id_hogar);
 
     const esJefe = membresia.rol === RolMiembro.ADMINISTRADOR || membresia.puede_validar_tareas;
     const esAutorCancelando =
-      (tarea.estado === EstadoTarea.POR_VALIDAR && tarea.id_completador === id_usuario) ||
+      ((tarea.estado === EstadoTarea.POR_VALIDAR || tarea.estado === EstadoTarea.EN_REVISION) &&
+        tarea.id_completador === id_usuario) ||
       (tarea.estado === EstadoTarea.PROPUESTA && tarea.id_creador === id_usuario);
 
     if (!esJefe && !esAutorCancelando) {
-      throw new ForbiddenException('Solo el Jefe de Hogar puede rechazar esta tarea');
+      throw new ForbiddenException('Solo el Jefe de Hogar / Administrador puede rechazar esta tarea');
     }
 
     if (tarea.estado === EstadoTarea.PROPUESTA) {
@@ -231,23 +322,28 @@ export class TareasService {
       return { ok: true, eliminada: true, id_tarea };
     }
 
-    if (tarea.estado === EstadoTarea.POR_VALIDAR) {
+    if (tarea.estado === EstadoTarea.POR_VALIDAR || tarea.estado === EstadoTarea.EN_REVISION) {
       return this.prisma.tarea.update({
         where: { id_tarea },
-        data: { estado: EstadoTarea.PENDIENTE, id_completador: null },
+        data: {
+          estado: EstadoTarea.PENDIENTE,
+          id_completador: null,
+          comentario_revision:
+            comentario_revision?.trim() ||
+            (esJefe ? 'Evidencia rechazada. Por favor corrige y vuelve a enviar foto.' : null),
+        },
         include: INCLUDE_TAREA,
       });
     }
 
-    throw new BadRequestException('La tarea no se encuentra pendiente de validación');
+    throw new BadRequestException('La tarea no se encuentra en revisión o pendiente de validación');
   }
 
-  /** Revierte una tarea completada (o en revisión) a pendiente, descontando los puntos si ya habían sido otorgados. */
   async reabrir(id_usuario: number, id_tarea: number, id_hogar_preferido?: number) {
     const membresia = await this.hogares.obtenerMembresia(id_usuario, id_hogar_preferido);
     const tarea = await this.buscarEnHogar(id_tarea, membresia.id_hogar);
 
-    if (tarea.estado === EstadoTarea.POR_VALIDAR) {
+    if (tarea.estado === EstadoTarea.POR_VALIDAR || tarea.estado === EstadoTarea.EN_REVISION) {
       if (
         membresia.rol !== RolMiembro.ADMINISTRADOR &&
         !membresia.puede_validar_tareas &&
@@ -279,7 +375,13 @@ export class TareasService {
     const ops: Prisma.PrismaPromise<unknown>[] = [
       this.prisma.tarea.update({
         where: { id_tarea },
-        data: { estado: EstadoTarea.PENDIENTE, fecha_completada: null, id_completador: null },
+        data: {
+          estado: EstadoTarea.PENDIENTE,
+          fecha_completada: null,
+          fecha_validacion: null,
+          id_completador: null,
+          id_validador: null,
+        },
         include: INCLUDE_TAREA,
       }),
     ];
@@ -306,8 +408,6 @@ export class TareasService {
     await this.prisma.$transaction(ops);
     return { ok: true };
   }
-
-  // ───────────────────────── Privados ─────────────────────────
 
   private ajustarPuntos(id_usuario: number, id_hogar: number, delta: number) {
     return this.prisma.miembroHogar.updateMany({

@@ -1,4 +1,4 @@
-import { IsBoolean, IsEmail, IsEnum, IsOptional, IsString, Length, MaxLength, MinLength } from 'class-validator';
+import { IsBoolean, IsEmail, IsEnum, IsInt, IsOptional, IsString, Length, MaxLength, MinLength } from 'class-validator';
 import { RolMiembro, TipoHogar } from '@prisma/client';
 
 export class CrearHogarDto {
@@ -22,6 +22,10 @@ export class UnirseHogarDto {
   @IsString()
   @Length(4, 16)
   codigo_invitacion?: string;
+
+  @IsOptional()
+  @IsInt()
+  id_usuario?: number;
 }
 
 export class InvitarMiembroDto {

@@ -11,6 +11,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import * as Clipboard from 'expo-clipboard';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -551,8 +552,22 @@ export function HomeHeaderBar() {
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={[styles.userTitle, { color: colors.textPrimary }]}>{usuario?.nombre}</Text>
+                {usuario?.identificador_unico ? (
+                  <Pressable
+                    onPress={async () => {
+                      await Clipboard.setStringAsync(usuario.identificador_unico!);
+                      Alert.alert('Copiado', `Identificador ${usuario.identificador_unico} copiado al portapapeles.`);
+                    }}
+                    style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 }}
+                  >
+                    <Text style={{ fontFamily: fonts.bold, fontSize: 12, color: colors.primary }}>
+                      {usuario.identificador_unico}
+                    </Text>
+                    <Ionicons name="copy-outline" size={13} color={colors.primary} />
+                  </Pressable>
+                ) : null}
                 <Text style={[styles.userHint, { color: colors.textSecondary }]}>
-                  Ingresa en cualquier dispositivo con tu nombre "{usuario?.nombre}" y tu PIN
+                  Ingresa en cualquier dispositivo con tu nombre o {usuario?.identificador_unico ?? '@id'} y tu PIN
                 </Text>
               </View>
             </View>

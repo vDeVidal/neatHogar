@@ -1,5 +1,6 @@
 import { Type } from 'class-transformer';
 import {
+  IsBoolean,
   IsDateString,
   IsInt,
   IsOptional,
@@ -11,14 +12,12 @@ import {
   ValidateIf,
 } from 'class-validator';
 
-/** Campos opcionales comunes a la creación y edición de tareas. */
 class CamposTareaDto {
   @IsOptional()
   @IsString()
   @MaxLength(500)
   descripcion?: string;
 
-  /** id_usuario del miembro asignado (null = sin asignar). */
   @IsOptional()
   @ValidateIf((_o, v) => v !== null)
   @IsInt()
@@ -35,6 +34,10 @@ class CamposTareaDto {
   @Min(1)
   @Max(100)
   puntos?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  requiere_foto?: boolean;
 
   @IsOptional()
   @ValidateIf((_o, v) => v !== null)
@@ -65,4 +68,35 @@ export class FiltroTareasDto {
   @IsOptional()
   @IsDateString()
   hasta?: string;
+}
+
+export class CompletarConEvidenciaDto {
+  @IsOptional()
+  @IsString()
+  foto_base64?: string;
+
+  @IsOptional()
+  @IsString()
+  evidencia_foto_url?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  id_usuario?: number;
+}
+
+export class ValidarTareaDto {
+  @IsOptional()
+  @IsBoolean()
+  aprobado?: boolean;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  id_validador?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  comentario_revision?: string;
 }

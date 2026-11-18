@@ -10,6 +10,7 @@ import { TareasModule } from './tareas/tareas.module';
 import { ComprasModule } from './compras/compras.module';
 import { EstadisticasModule } from './estadisticas/estadisticas.module';
 import { GastosModule } from './gastos/gastos.module';
+import { SuministrosModule } from './suministros/suministros.module';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -23,6 +24,7 @@ import { HealthController } from './health.controller';
     ComprasModule,
     EstadisticasModule,
     GastosModule,
+    SuministrosModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_GUARD, useClass: JwtAuthGuard }],

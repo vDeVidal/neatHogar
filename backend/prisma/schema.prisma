@@ -22,8 +22,10 @@ enum TipoHogar {
 enum EstadoTarea {
   PROPUESTA
   PENDIENTE
+  EN_REVISION
   POR_VALIDAR
   COMPLETADA
+  RECHAZADA
 }
 
 enum EstadoValidacion {
@@ -37,6 +39,11 @@ enum TipoCategoria {
   COMPRA
 }
 
+enum TipoSuministro {
+  GAS
+  DESPENSA
+}
+
 enum NivelDisponibilidad {
   ALTA
   MEDIA
@@ -44,43 +51,69 @@ enum NivelDisponibilidad {
 }
 
 model Usuario {
-  id_usuario          Int                 @id @default(autoincrement())
+  id_usuario          Int                  @id @default(autoincrement())
+  identificador_unico String?              @unique
   nombre              String
-  nombre_login        String?             @unique
-  email               String              @unique
+  nombre_login        String?              @unique
+  email               String               @unique
   password_hash       String?
   pin_hash            String?
   avatar_url          String?
-  disponibilidad      NivelDisponibilidad @default(MEDIA)
-  descripcion_carga   String?             // Ej: "Estudiante", "Trabajador tiempo completo"
-  tema_preferido      String              @default("noche_indigo")
+  disponibilidad      NivelDisponibilidad  @default(MEDIA)
+  descripcion_carga   String?
+  tema_preferido      String               @default("noche_indigo")
+  expo_push_token     String?
   id_hogar_activo     Int?
-  fecha_registro      DateTime            @default(now())
+  fecha_registro      DateTime             @default(now())
 
   membresias          MiembroHogar[]
-  tareas_creadas      Tarea[]             @relation("TareasCreador")
-  tareas_asignadas    Tarea[]             @relation("TareasAsignado")
-  tareas_completadas  Tarea[]             @relation("TareasCompletador")
-  items_creados       ItemCompra[]        @relation("ItemsCreador")
-  items_comprados     ItemCompra[]        @relation("ItemsComprador")
-  gastos_registrados  Gasto[]             @relation("GastosRegistrador") // [Extensión] Pantalla 7
+  codigos_generados   CodigoInvitacion[]
+  tareas_creadas      Tarea[]              @relation("TareasCreador")
+  tareas_asignadas    Tarea[]              @relation("TareasAsignado")
+  tareas_completadas  Tarea[]              @relation("TareasCompletador")
+  tareas_validadas    Tarea[]              @relation("TareasValidador")
+  items_creados       ItemCompra[]         @relation("ItemsCreador")
+  items_comprados     ItemCompra[]         @relation("ItemsComprador")
+  gastos_registrados  Gasto[]              @relation("GastosRegistrador")
+  suministros         RegistroSuministro[]
 
   @@map("usuario")
 }
 
 model Hogar {
-  id_hogar            Int                 @id @default(autoincrement())
+  id_hogar            Int                  @id @default(autoincrement())
   nombre              String
-  tipo_hogar          TipoHogar           @default(COLABORATIVO)
-  codigo_invitacion   String              @unique
-  fecha_creacion      DateTime            @default(now())
+  tipo_hogar          TipoHogar            @default(COLABORATIVO)
+  codigo_invitacion   String               @unique
+  fecha_creacion      DateTime             @default(now())
 
   miembros            MiembroHogar[]
+  codigos_invitacion  CodigoInvitacion[]
   tareas              Tarea[]
   items_compra        ItemCompra[]
-  gastos              Gasto[]             // [Extensión] Pantalla 7
+  gastos              Gasto[]
+  suministros         RegistroSuministro[]
 
   @@map("hogar")
+}
+
+model CodigoInvitacion {
+  id_codigo               Int        @id @default(autoincrement())
+  codigo                  String     @unique
+  id_hogar                Int
+  id_creador              Int
+  rol_asignado            RolMiembro @default(MIEMBRO)
+  puede_validar_tareas    Boolean    @default(true)
+  puede_crear_tareas      Boolean    @default(true)
+  puede_gestionar_compras Boolean    @default(true)
+  creado_en               DateTime   @default(now())
+  expira_en               DateTime
+  usado                   Boolean    @default(false)
+
+  hogar                   Hogar      @relation(fields: [id_hogar], references: [id_hogar], onDelete: Cascade)
+  creador                 Usuario    @relation(fields: [id_creador], references: [id_usuario], onDelete: Cascade)
+
+  @@map("codigo_invitacion")
 }
 
 model MiembroHogar {
@@ -102,8 +135,8 @@ model MiembroHogar {
 }
 
 model Categoria {
-  id_categoria        Int                 @id @default(autoincrement())
-  nombre              String              // Ej: "Supermercado", "Ferretería", "Farmacia", "Limpieza"
+  id_categoria        Int          @id @default(autoincrement())
+  nombre              String
   tipo                TipoCategoria
 
   tareas              Tarea[]
@@ -113,63 +146,85 @@ model Categoria {
 }
 
 model Tarea {
-  id_tarea            Int                 @id @default(autoincrement())
+  id_tarea            Int         @id @default(autoincrement())
   id_hogar            Int
   id_creador          Int
   id_asignado         Int?
   id_completador      Int?
+  id_validador        Int?
   id_categoria        Int?
   titulo              String
   descripcion         String?
-  puntos              Int                 @default(10) // Esfuerzo o dificultad de la tarea
-  estado              EstadoTarea         @default(PENDIENTE)
+  puntos              Int         @default(10)
+  estado              EstadoTarea @default(PENDIENTE)
+  requiere_foto       Boolean     @default(true)
+  evidencia_foto_url  String?
+  comentario_revision String?
+  fecha_completada    DateTime?
+  fecha_validacion    DateTime?
   fecha_limite        DateTime?
-  fecha_creacion      DateTime            @default(now())
-  fecha_completada    DateTime?           // [Extensión] Permite graficar el progreso diario del Dashboard
+  fecha_creacion      DateTime    @default(now())
 
-  hogar               Hogar               @relation(fields: [id_hogar], references: [id_hogar], onDelete: Cascade)
-  creador             Usuario             @relation("TareasCreador", fields: [id_creador], references: [id_usuario])
-  asignado            Usuario?            @relation("TareasAsignado", fields: [id_asignado], references: [id_usuario])
-  completador         Usuario?            @relation("TareasCompletador", fields: [id_completador], references: [id_usuario], onDelete: SetNull)
-  categoria           Categoria?          @relation(fields: [id_categoria], references: [id_categoria])
+  hogar               Hogar       @relation(fields: [id_hogar], references: [id_hogar], onDelete: Cascade)
+  creador             Usuario     @relation("TareasCreador", fields: [id_creador], references: [id_usuario])
+  asignado            Usuario?    @relation("TareasAsignado", fields: [id_asignado], references: [id_usuario])
+  completador         Usuario?    @relation("TareasCompletador", fields: [id_completador], references: [id_usuario], onDelete: SetNull)
+  validador           Usuario?    @relation("TareasValidador", fields: [id_validador], references: [id_usuario], onDelete: SetNull)
+  categoria           Categoria?  @relation(fields: [id_categoria], references: [id_categoria])
 
   @@map("tarea")
 }
 
 model ItemCompra {
-  id_item             Int                 @id @default(autoincrement())
+  id_item             Int              @id @default(autoincrement())
   id_hogar            Int
   id_creador          Int
   id_comprador        Int?
   id_categoria        Int?
   nombre              String
-  cantidad            String              @default("1")
-  comprado            Boolean             @default(false)
-  estado_validacion   EstadoValidacion    @default(APROBADO)
-  fecha_creacion      DateTime            @default(now())
+  cantidad            String           @default("1")
+  comprado            Boolean          @default(false)
+  estado_validacion   EstadoValidacion @default(APROBADO)
+  fecha_creacion      DateTime         @default(now())
   fecha_compra        DateTime?
 
-  hogar               Hogar               @relation(fields: [id_hogar], references: [id_hogar], onDelete: Cascade)
-  creador             Usuario             @relation("ItemsCreador", fields: [id_creador], references: [id_usuario])
-  comprador           Usuario?            @relation("ItemsComprador", fields: [id_comprador], references: [id_usuario])
-  categoria           Categoria?          @relation(fields: [id_categoria], references: [id_categoria])
+  hogar               Hogar            @relation(fields: [id_hogar], references: [id_hogar], onDelete: Cascade)
+  creador             Usuario          @relation("ItemsCreador", fields: [id_creador], references: [id_usuario])
+  comprador           Usuario?         @relation("ItemsComprador", fields: [id_comprador], references: [id_usuario])
+  categoria           Categoria?       @relation(fields: [id_categoria], references: [id_categoria])
 
   @@map("item_compra")
 }
 
-// [Extensión] Registro simple de gastos del hogar para la vista "Gastos Generales"
-// de la Pantalla 7. No incluye pagos, transferencias ni finanzas avanzadas.
 model Gasto {
-  id_gasto            Int                 @id @default(autoincrement())
+  id_gasto            Int              @id @default(autoincrement())
   id_hogar            Int
   id_registrador      Int
-  concepto            String              // Ej: "Arriendo", "Luz", "Agua", "Gastos Comunes"
-  monto               Int                 // Monto en pesos (CLP), sin decimales
-  estado_validacion   EstadoValidacion    @default(APROBADO)
-  fecha               DateTime            @default(now())
+  concepto            String
+  monto               Int
+  estado_validacion   EstadoValidacion @default(APROBADO)
+  fecha               DateTime         @default(now())
 
-  hogar               Hogar               @relation(fields: [id_hogar], references: [id_hogar], onDelete: Cascade)
-  registrador         Usuario             @relation("GastosRegistrador", fields: [id_registrador], references: [id_usuario])
+  hogar               Hogar            @relation(fields: [id_hogar], references: [id_hogar], onDelete: Cascade)
+  registrador         Usuario          @relation("GastosRegistrador", fields: [id_registrador], references: [id_usuario])
 
   @@map("gasto")
+}
+
+model RegistroSuministro {
+  id_suministro       Int            @id @default(autoincrement())
+  id_hogar            Int
+  id_comprador        Int
+  tipo                TipoSuministro @default(DESPENSA)
+  nombre              String
+  fecha_compra        DateTime       @default(now())
+  dias_alerta_inicial Int            @default(14)
+  dias_alerta_critica Int            @default(21)
+  activo              Boolean        @default(true)
+  notas               String?
+
+  hogar               Hogar          @relation(fields: [id_hogar], references: [id_hogar], onDelete: Cascade)
+  comprador           Usuario        @relation(fields: [id_comprador], references: [id_usuario], onDelete: Cascade)
+
+  @@map("registro_suministro")
 }

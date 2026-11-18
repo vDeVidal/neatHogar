@@ -13,7 +13,6 @@ import {
 export class HogaresController {
   constructor(private readonly hogares: HogaresService) {}
 
-  /** Lista todas las casas registradas del usuario para el acceso rápido en Inicio y Header. */
   @Get()
   listarMisHogares(@UsuarioActual() u: UsuarioAutenticado) {
     return this.hogares.listarMisHogares(u.id_usuario);
@@ -44,6 +43,31 @@ export class HogaresController {
   @Patch('actual/tipo')
   actualizarTipo(@UsuarioActual() u: UsuarioAutenticado, @Body() dto: ActualizarTipoHogarDto) {
     return this.hogares.actualizarTipoHogar(u.id_usuario, dto, u.id_hogar);
+  }
+
+  /** Endpoint especificación v2: POST /api/hogares/:idHogar/invitaciones (TTL 5 minutos) */
+  @Post(':idHogar/invitaciones')
+  generarCodigoTemporalPorHogar(
+    @UsuarioActual() u: UsuarioAutenticado,
+    @Param('idHogar', ParseIntPipe) idHogar: number,
+    @Body() dto: InvitarMiembroDto,
+  ) {
+    return this.hogares.generarCodigoTemporal(u.id_usuario, idHogar, dto);
+  }
+
+  /** Endpoint auxiliar sobre hogar activo: POST /api/hogares/actual/invitaciones-temporales */
+  @Post('actual/invitaciones-temporales')
+  generarCodigoTemporalActual(
+    @UsuarioActual() u: UsuarioAutenticado,
+    @Body() dto: InvitarMiembroDto,
+  ) {
+    return this.hogares.generarCodigoTemporal(u.id_usuario, u.id_hogar, dto);
+  }
+
+  /** Consulta el código temporal activo del hogar (con segundos restantes) */
+  @Get('actual/invitacion-activa')
+  obtenerInvitacionActiva(@UsuarioActual() u: UsuarioAutenticado) {
+    return this.hogares.obtenerInvitacionActiva(u.id_usuario, u.id_hogar);
   }
 
   @Post('actual/invitaciones')

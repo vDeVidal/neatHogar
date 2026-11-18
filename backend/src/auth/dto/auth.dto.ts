@@ -8,6 +8,12 @@ export class RegistroDto {
   @MaxLength(60)
   nombre!: string;
 
+  @IsOptional()
+  @IsString()
+  @MinLength(2)
+  @MaxLength(40)
+  identificador_unico?: string;
+
   @IsEmail({}, { message: 'Email inválido' })
   email!: string;
 
@@ -34,8 +40,14 @@ export class RegistroDto {
 }
 
 export class LoginDto {
-  @IsEmail({}, { message: 'Email inválido' })
-  email!: string;
+  /** Puede ser un email o un @identificador_unico */
+  @IsOptional()
+  @IsString()
+  email?: string;
+
+  @IsOptional()
+  @IsString()
+  identificador_unico?: string;
 
   @IsString()
   password!: string;
@@ -46,6 +58,12 @@ export class PinRegistroDto {
   @MinLength(2, { message: 'El nombre debe tener al menos 2 caracteres' })
   @MaxLength(60)
   nombre!: string;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(2)
+  @MaxLength(40)
+  identificador_unico?: string;
 
   @IsString()
   @Matches(/^\d{4,6}$/, { message: 'El PIN debe tener entre 4 y 6 dígitos numéricos' })
@@ -66,8 +84,9 @@ export class PinRegistroDto {
 }
 
 export class PinLoginDto {
+  /** Puede ser el nombre del usuario o su @identificador_unico */
   @IsString()
-  @MinLength(2, { message: 'Ingresa tu nombre' })
+  @MinLength(2, { message: 'Ingresa tu nombre o @identificador' })
   @MaxLength(60)
   nombre!: string;
 

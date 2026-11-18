@@ -39,6 +39,7 @@ export function VinculacionPage({ navigation, route }: Props) {
     loginConPin,
     registroConPin,
     login,
+    registro,
     logout,
     activarModoDemo,
   } = useAuth();
@@ -47,11 +48,12 @@ export function VinculacionPage({ navigation, route }: Props) {
 
   const [themeModalVisible, setThemeModalVisible] = useState(false);
   const [modalType, setModalType] = useState<
-    'pin_login' | 'pin_registro' | 'crear' | 'unirse' | 'email_login' | null
+    'pin_login' | 'pin_registro' | 'crear' | 'unirse' | 'email_login' | 'email_registro' | null
   >(null);
 
   // Campos de formulario
   const [nombreUsuario, setNombreUsuario] = useState('');
+  const [identificadorUnico, setIdentificadorUnico] = useState('');
   const [pinUsuario, setPinUsuario] = useState('');
   const [nombreHogar, setNombreHogar] = useState('');
   const [tipoHogar, setTipoHogar] = useState<TipoHogar>('COLABORATIVO');
@@ -130,11 +132,36 @@ export function VinculacionPage({ navigation, route }: Props) {
     setLoading(true);
     setErrorMsg('');
     try {
-      await registroConPin(nombreUsuario.trim(), pinUsuario.trim());
+      await registroConPin(
+        nombreUsuario.trim(),
+        pinUsuario.trim(),
+        identificadorUnico.trim() || undefined,
+      );
       setPinUsuario('');
       setModalType(null);
     } catch (e: any) {
       setErrorMsg(e?.message || 'Ese nombre ya está registrado. Usa "Entrar con Nombre y PIN".');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleEmailRegistro = async () => {
+    if (!nombreUsuario.trim() || !email.trim() || !password) {
+      setErrorMsg('Completa Nombre, Correo y Contraseña');
+      return;
+    }
+    setLoading(true);
+    setErrorMsg('');
+    try {
+      await registro(nombreUsuario.trim(), email.trim(), password, {
+        identificador_unico: identificadorUnico.trim() || undefined,
+        pin: /^\d{4,6}$/.test(pinUsuario.trim()) ? pinUsuario.trim() : undefined,
+      });
+      setPassword('');
+      setModalType(null);
+    } catch (e: any) {
+      setErrorMsg(e?.message || 'Error al registrar la cuenta');
     } finally {
       setLoading(false);
     }
@@ -257,6 +284,7 @@ export function VinculacionPage({ navigation, route }: Props) {
                   Hola, {usuario.nombre}
                 </Text>
                 <Text style={[styles.accountSub, { color: colors.textSecondary }]}>
+                  {usuario.identificador_unico ? `${usuario.identificador_unico} • ` : ''}
                   {misHogares.length === 1
                     ? '1 casa registrada'
                     : `${misHogares.length} casas registradas`}
@@ -521,11 +549,12 @@ export function VinculacionPage({ navigation, route }: Props) {
           <View style={[styles.modalContent, { backgroundColor: colors.surface, borderColor: colors.border }]}>
             <View style={styles.modalHeader}>
               <Text style={[styles.modalTitle, { color: colors.textPrimary }]}>
-                {modalType === 'pin_login' && 'Entrar con Nombre y PIN'}
-                {modalType === 'pin_registro' && 'Crear Cuenta con PIN'}
+                {modalType === 'pin_login' && 'Entrar con Nombre/@ID y PIN'}
+                {modalType === 'pin_registro' && 'Crear Cuenta con @ID y PIN'}
                 {modalType === 'crear' && (usuario ? 'Crear Nueva Casa' : 'Crear Núcleo Familiar')}
-                {modalType === 'unirse' && (usuario ? 'Unirme a Otra Casa' : 'Unirse a un Hogar')}
-                {modalType === 'email_login' && 'Ingresar con Correo'}
+                {modalType === 'unirse' && (usuario ? 'Unirme con Código (5 min)' : 'Unirse a un Hogar')}
+                {modalType === 'email_login' && 'Ingresar con Correo o @ID'}
+                {modalType === 'email_registro' && 'Crear Cuenta Completa'}
               </Text>
               <Pressable
                 onPress={() => setModalType(null)}
@@ -588,7 +617,7 @@ export function VinculacionPage({ navigation, route }: Props) {
               {modalType === 'pin_registro' && (
                 <View>
                   <Text style={[styles.modalPrompt, { color: colors.textSecondary }]}>
-                    Crea tu cuenta rápida solo con tu nombre y un PIN numérico fácil de recordar:
+                    Crea tu cuenta con tu nombre, un identificador único (@username) y un PIN numérico:
                   </Text>
                   <AppInput
                     label="Tu Nombre"
@@ -596,6 +625,14 @@ export function VinculacionPage({ navigation, route }: Props) {
                     value={nombreUsuario}
                     onChangeText={setNombreUsuario}
                     icon="person-outline"
+                  />
+                  <AppInput
+                    label="Identificador Único (@username — opcional)"
+                    placeholder="Ej: @lucas.moya (se autogenera si lo dejas vacío)"
+                    value={identificadorUnico}
+                    onChangeText={setIdentificadorUnico}
+                    autoCapitalize="none"
+                    icon="at-outline"
                   />
                   <AppInput
                     label="Elige un PIN (4 a 6 dígitos)"
@@ -608,11 +645,18 @@ export function VinculacionPage({ navigation, route }: Props) {
                   />
                   {errorMsg ? <Text style={[styles.error, { color: colors.danger }]}>{errorMsg}</Text> : null}
                   <AppButton title="Registrarme" onPress={handlePinRegistro} loading={loading} icon="checkmark-circle-outline" />
-                  <Pressable onPress={() => abrirModal('pin_login')} style={styles.switchAuth}>
-                    <Text style={[styles.switchAuthText, { color: colors.primary }]}>
-                      ¿Ya tienes PIN? Entra aquí
-                    </Text>
-                  </Pressable>
+                  <View style={styles.switchLinksRow}>
+                    <Pressable onPress={() => abrirModal('pin_login')} style={styles.switchAuth}>
+                      <Text style={[styles.switchAuthText, { color: colors.primary }]}>
+                        ¿Ya tienes PIN? Entra aquí
+                      </Text>
+                    </Pressable>
+                    <Pressable onPress={() => abrirModal('email_registro')} style={styles.switchAuth}>
+                      <Text style={[styles.switchAuthText, { color: colors.textSecondary }]}>
+                        Con correo y clave
+                      </Text>
+                    </Pressable>
+                  </View>
                 </View>
               )}
 
@@ -779,9 +823,60 @@ export function VinculacionPage({ navigation, route }: Props) {
                 </View>
               )}
 
-              {/* 5. LOGIN SECUNDARIO CON EMAIL */}
+              {/* 5. LOGIN CON EMAIL O @IDENTIFICADOR */}
               {modalType === 'email_login' && (
                 <View>
+                  <AppInput
+                    label="Correo Electrónico o @Identificador Único"
+                    placeholder="tu@email.com o @benjamin.vidal"
+                    autoCapitalize="none"
+                    value={email}
+                    onChangeText={setEmail}
+                    icon="at-outline"
+                  />
+                  <AppInput
+                    label="Contraseña"
+                    placeholder="••••••••"
+                    secureTextEntry
+                    value={password}
+                    onChangeText={setPassword}
+                    icon="lock-closed-outline"
+                  />
+                  {errorMsg ? <Text style={[styles.error, { color: colors.danger }]}>{errorMsg}</Text> : null}
+                  <AppButton title="Iniciar Sesión" onPress={handleEmailLogin} loading={loading} />
+                  <View style={styles.switchLinksRow}>
+                    <Pressable onPress={() => abrirModal('pin_login')} style={styles.switchAuth}>
+                      <Text style={[styles.switchAuthText, { color: colors.primary }]}>
+                        Entrar con PIN
+                      </Text>
+                    </Pressable>
+                    <Pressable onPress={() => abrirModal('email_registro')} style={styles.switchAuth}>
+                      <Text style={[styles.switchAuthText, { color: colors.secondary }]}>
+                        Crear cuenta con correo
+                      </Text>
+                    </Pressable>
+                  </View>
+                </View>
+              )}
+
+              {/* 6. REGISTRO COMPLETO CON CORREO, CONTRASEÑA E @IDENTIFICADOR */}
+              {modalType === 'email_registro' && (
+                <View>
+                  <AppInput
+                    label="Nombre y Apellido"
+                    placeholder="Ej: Benjamín Vidal"
+                    value={nombreUsuario}
+                    onChangeText={setNombreUsuario}
+                    icon="person-outline"
+                  />
+                  <AppInput
+                    label="Identificador Único (@username)"
+                    placeholder="Ej: @benja_vidal"
+                    autoCapitalize="none"
+                    value={identificadorUnico}
+                    onChangeText={setIdentificadorUnico}
+                    icon="at-outline"
+                  />
                   <AppInput
                     label="Correo Electrónico"
                     placeholder="tu@email.com"
@@ -800,10 +895,10 @@ export function VinculacionPage({ navigation, route }: Props) {
                     icon="lock-closed-outline"
                   />
                   {errorMsg ? <Text style={[styles.error, { color: colors.danger }]}>{errorMsg}</Text> : null}
-                  <AppButton title="Iniciar Sesión" onPress={handleEmailLogin} loading={loading} />
-                  <Pressable onPress={() => abrirModal('pin_login')} style={styles.switchAuth}>
+                  <AppButton title="Crear Cuenta" onPress={handleEmailRegistro} loading={loading} />
+                  <Pressable onPress={() => abrirModal('email_login')} style={styles.switchAuth}>
                     <Text style={[styles.switchAuthText, { color: colors.primary }]}>
-                      Volver a ingreso rápido con Nombre y PIN
+                      ¿Ya tienes cuenta? Inicia sesión
                     </Text>
                   </Pressable>
                 </View>

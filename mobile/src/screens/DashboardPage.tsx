@@ -34,6 +34,7 @@ export function DashboardPage() {
     tareas,
     compras,
     gastos,
+    suministros,
     esJefeDeHogar,
     esHogarConJefe,
     validacionesPendientesCount,
@@ -92,7 +93,10 @@ export function DashboardPage() {
   const miembros = hogar?.miembros ?? [];
 
   const tareasPorValidar = tareas.filter(
-    (t) => t.estado === 'POR_VALIDAR' || t.estado === 'PROPUESTA',
+    (t) =>
+      t.estado === 'EN_REVISION' ||
+      t.estado === 'POR_VALIDAR' ||
+      t.estado === 'PROPUESTA',
   );
   const comprasPorValidar = compras.filter(
     (c) =>
@@ -194,6 +198,45 @@ export function DashboardPage() {
             </Pressable>
           )}
         </View>
+
+        {/* ALERTA PREVENTIVA DEL MONITOR DE GAS EN EL DIARIO MURAL */}
+        {suministros.gas_activo && suministros.gas_activo.nivel_alerta !== 'NORMAL' && (
+          <View
+            style={[
+              styles.modeBanner,
+              {
+                backgroundColor:
+                  suministros.gas_activo.nivel_alerta === 'CRITICO_3_SEMANAS'
+                    ? colors.danger + '18'
+                    : colors.warning + '18',
+                borderColor:
+                  suministros.gas_activo.nivel_alerta === 'CRITICO_3_SEMANAS'
+                    ? colors.danger
+                    : colors.warning,
+              },
+            ]}
+          >
+            <Ionicons
+              name="flame"
+              size={22}
+              color={
+                suministros.gas_activo.nivel_alerta === 'CRITICO_3_SEMANAS'
+                  ? colors.danger
+                  : colors.warning
+              }
+            />
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.modeBannerTitle, { color: colors.textPrimary }]}>
+                {suministros.gas_activo.nivel_alerta === 'CRITICO_3_SEMANAS'
+                  ? `🚨 Alerta Crítica de Gas (${suministros.gas_activo.dias_transcurridos} días)`
+                  : `⚠️ Monitor de Gas: ${suministros.gas_activo.dias_transcurridos} días (${suministros.gas_activo.semanas_transcurridas} sem)`}
+              </Text>
+              <Text style={[styles.modeBannerSub, { color: colors.textSecondary }]}>
+                {suministros.gas_activo.nombre} — Revisa el apartado "Despensa y Gas 🔥" en la pestaña Compras.
+              </Text>
+            </View>
+          </View>
+        )}
 
         {/* ACCESO RÁPIDO A MIS CASAS EN LA PANTALLA DE INICIO */}
         {misHogares.length > 0 && (
@@ -300,7 +343,9 @@ export function DashboardPage() {
               <View key={`t-${t.id_tarea}`} style={[styles.valItemRow, { borderTopColor: colors.border }]}>
                 <View style={{ flex: 1 }}>
                   <Text style={[styles.valItemLabel, { color: colors.primary }]}>
-                    {t.estado === 'PROPUESTA' ? 'TAREA PROPUESTA' : `TAREA HECHA (+${t.puntos} pts)`}
+                    {t.estado === 'PROPUESTA'
+                      ? 'TAREA PROPUESTA'
+                      : `TAREA EN REVISIÓN (+${t.puntos} pts)${t.evidencia_foto_url ? ' • 📷 CON FOTO' : ''}`}
                   </Text>
                   <Text style={[styles.valItemTitle, { color: colors.textPrimary }]}>{t.titulo}</Text>
                   <Text style={[styles.valItemMeta, { color: colors.textSecondary }]}>
@@ -460,6 +505,7 @@ export function DashboardPage() {
                       </View>
 
                       <Text style={[styles.memberRole, { color: colors.textSecondary }]}>
+                        {item.usuario.identificador_unico ? `${item.usuario.identificador_unico} • ` : ''}
                         {item.puntos_acumulados} pts acumulados
                       </Text>
 

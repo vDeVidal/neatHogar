@@ -1,4 +1,4 @@
-import { Platform } from 'react-native';
+import { NativeModules, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   AuthResponse,
@@ -6,12 +6,16 @@ import {
   Gasto,
   HogarDetalle,
   HogarResumen,
+  InvitacionTemporal,
   ItemCompra,
   MiembroParticipacion,
   ProgresoDia,
+  RegistroSuministro,
+  ResumenSuministros,
   RolMiembro,
   Tarea,
   TipoHogar,
+  TipoSuministro,
   Usuario,
 } from '../types';
 
@@ -20,13 +24,64 @@ const ACTIVE_HOGAR_KEY = '@neathogar/active_hogar_id';
 const LEGACY_SAVED_HOMES_KEY = '@neathogar/saved_homes';
 const BASE_URL_KEY = '@neathogar/base_url';
 
-const DEFAULT_BASE_URL = Platform.select({
-  android: 'http://10.0.2.2:3000/api',
-  ios: 'http://localhost:3000/api',
-  default: 'http://localhost:3000/api',
-});
+const LAN_FALLBACK_IP = '192.168.18.6';
+
+/**
+ * Detecta dinámicamente la IP del PC desde la URL del bundle de Metro en Expo Go.
+ * Así funciona tanto en un celular físico por Wi-Fi (ej. 192.168.18.6) como en emuladores (10.0.2.2 / localhost).
+ */
+function detectMetroHostIp(): string | null {
+  try {
+    const scriptURL: string | undefined = NativeModules?.SourceCode?.scriptURL;
+    if (scriptURL) {
+      const match = scriptURL.match(/^(?:https?|exp):\/\/([^/:]+)(?::\d+)?/i);
+      if (match?.[1] && match[1] !== 'localhost' && match[1] !== '127.0.0.1') {
+        return match[1];
+      }
+    }
+  } catch {
+    // Ignorar si no está disponible
+  }
+  return null;
+}
+
+function getCandidateBaseUrls(customUrl?: string | null): string[] {
+  const candidates: string[] = [];
+  const pushUnique = (u?: string | null) => {
+    if (!u) return;
+    const clean = u.trim().replace(/\/+$/, '');
+    const withApi = clean.endsWith('/api') ? clean : `${clean}/api`;
+    if (!candidates.includes(withApi)) {
+      candidates.push(withApi);
+    }
+  };
+
+  if (customUrl) {
+    pushUnique(customUrl);
+  }
+
+  const metroHost = detectMetroHostIp();
+  if (metroHost) {
+    pushUnique(`http://${metroHost}:3000/api`);
+  }
+
+  // IP LAN detectada del PC (para celular físico en la misma red Wi-Fi)
+  pushUnique(`http://${LAN_FALLBACK_IP}:3000/api`);
+
+  // Fallbacks para Emulador Android y simulador local
+  if (Platform.OS === 'android') {
+    pushUnique('http://10.0.2.2:3000/api');
+  }
+  pushUnique('http://localhost:3000/api');
+  pushUnique('http://127.0.0.1:3000/api');
+
+  return candidates;
+}
+
+const DEFAULT_BASE_URL = getCandidateBaseUrls()[0];
 
 let currentBaseUrl = DEFAULT_BASE_URL;
+let customSavedUrl: string | null = null;
 let currentToken: string | null = null;
 let currentHogarId: number | null = null;
 
@@ -40,7 +95,12 @@ export async function initApi() {
     currentToken = savedToken || null;
     const parsedHogar = savedHogarId ? parseInt(savedHogarId, 10) : NaN;
     currentHogarId = Number.isFinite(parsedHogar) && parsedHogar > 0 ? parsedHogar : null;
-    if (savedUrl) currentBaseUrl = savedUrl;
+    if (savedUrl && !savedUrl.includes('10.0.2.2')) {
+      customSavedUrl = savedUrl;
+      currentBaseUrl = savedUrl;
+    } else {
+      currentBaseUrl = getCandidateBaseUrls()[0];
+    }
   } catch {
     currentToken = null;
     currentHogarId = null;
@@ -81,7 +141,6 @@ export function getActiveHogarId() {
   return currentHogarId;
 }
 
-/** Limpia por completo cualquier rastro de sesión en memoria y en AsyncStorage. */
 export async function clearApiSession() {
   currentToken = null;
   currentHogarId = null;
@@ -95,17 +154,56 @@ export async function clearApiSession() {
 }
 
 export async function setApiBaseUrl(url: string) {
-  currentBaseUrl = url.trim();
-  await AsyncStorage.setItem(BASE_URL_KEY, currentBaseUrl).catch(() => undefined);
+  const clean = url.trim().replace(/\/+$/, '');
+  const formatted = clean ? (clean.endsWith('/api') ? clean : `${clean}/api`) : getCandidateBaseUrls()[0];
+  customSavedUrl = clean ? formatted : null;
+  currentBaseUrl = formatted;
+  if (clean) {
+    await AsyncStorage.setItem(BASE_URL_KEY, formatted).catch(() => undefined);
+  } else {
+    await AsyncStorage.removeItem(BASE_URL_KEY).catch(() => undefined);
+  }
 }
 
 export function getApiBaseUrl() {
   return currentBaseUrl;
 }
 
+/** Convierte una ruta relativa como `/uploads/evidencias/foto.jpg` en URL absoluta hacia el backend activo. */
+export function resolveMediaUrl(relativeOrFullUrl?: string | null): string | null {
+  if (!relativeOrFullUrl) return null;
+  if (
+    relativeOrFullUrl.startsWith('http://') ||
+    relativeOrFullUrl.startsWith('https://') ||
+    relativeOrFullUrl.startsWith('file://') ||
+    relativeOrFullUrl.startsWith('content://') ||
+    relativeOrFullUrl.startsWith('data:')
+  ) {
+    return relativeOrFullUrl;
+  }
+  const rawBase = (currentBaseUrl || DEFAULT_BASE_URL).trim().replace(/\/+$/, '');
+  const origin = rawBase.replace(/\/api$/, '');
+  const path = relativeOrFullUrl.startsWith('/') ? relativeOrFullUrl : `/${relativeOrFullUrl}`;
+  return `${origin}${path}`;
+}
+
+async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs = 4500): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
   const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
+    ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
     ...(options.headers as Record<string, string>),
   };
 
@@ -116,15 +214,30 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     headers['x-hogar-id'] = String(currentHogarId);
   }
 
-  const rawBase = (currentBaseUrl || DEFAULT_BASE_URL).trim().replace(/\/+$/, '');
-  const baseUrl = rawBase.endsWith('/api') ? rawBase : `${rawBase}/api`;
   const cleanPath = path.startsWith('/') ? path : `/${path}`;
-  const url = `${baseUrl}${cleanPath}`;
+  const candidates = getCandidateBaseUrls(customSavedUrl || currentBaseUrl);
 
-  const response = await fetch(url, {
-    ...options,
-    headers,
-  });
+  let response: Response | null = null;
+  let lastNetworkError: any = null;
+
+  for (const candidateBase of candidates) {
+    const url = `${candidateBase}${cleanPath}`;
+    try {
+      response = await fetchWithTimeout(url, { ...options, headers }, 5000);
+      if (currentBaseUrl !== candidateBase) {
+        currentBaseUrl = candidateBase;
+      }
+      break;
+    } catch (netErr: any) {
+      lastNetworkError = netErr;
+    }
+  }
+
+  if (!response) {
+    throw new Error(
+      `No se pudo conectar al servidor (${currentBaseUrl}). Verifica que tu celular y tu PC estén en la misma red Wi-Fi (${LAN_FALLBACK_IP}:3000). Detalle: ${lastNetworkError?.message || 'Sin respuesta'}`,
+    );
+  }
 
   if (!response.ok) {
     let mensaje = `Error HTTP ${response.status}`;
@@ -149,7 +262,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
-  // ───────────── Auth (Nombre + PIN y Email) ─────────────
+  // ───────────── Auth (Nombre/@identificador + PIN y Email/@identificador + Password) ─────────────
   async loginConPin(data: {
     nombre: string;
     pin: string;
@@ -176,6 +289,7 @@ export const api = {
   async registroConPin(data: {
     nombre: string;
     pin: string;
+    identificador_unico?: string;
     disponibilidad?: string;
     descripcion_carga?: string;
     tema_preferido?: string;
@@ -191,6 +305,7 @@ export const api = {
   async accesoConPin(data: {
     nombre: string;
     pin: string;
+    identificador_unico?: string;
     tema_preferido?: string;
   }): Promise<AuthResponse> {
     const res = await request<AuthResponse>('/auth/pin/acceso', {
@@ -208,6 +323,7 @@ export const api = {
     nombre: string;
     email: string;
     password: string;
+    identificador_unico?: string;
     pin?: string;
     disponibilidad?: string;
     descripcion_carga?: string;
@@ -221,7 +337,11 @@ export const api = {
     return res;
   },
 
-  async login(data: { email: string; password: string }): Promise<AuthResponse> {
+  async login(data: {
+    email?: string;
+    identificador_unico?: string;
+    password: string;
+  }): Promise<AuthResponse> {
     const res = await request<AuthResponse>('/auth/login', {
       method: 'POST',
       body: JSON.stringify(data),
@@ -250,7 +370,7 @@ export const api = {
     });
   },
 
-  // ───────────── Hogares (Multi-Hogar + Tipos) ─────────────
+  // ───────────── Hogares & Invitaciones Dinámicas (TTL 5 min) ─────────────
   async getMisHogares(): Promise<HogarResumen[]> {
     return request('/hogares');
   },
@@ -292,6 +412,28 @@ export const api = {
     });
   },
 
+  async generarCodigoTemporal(
+    id_hogar?: number,
+    opciones?: {
+      rol?: RolMiembro;
+      puede_validar_tareas?: boolean;
+      puede_crear_tareas?: boolean;
+      puede_gestionar_compras?: boolean;
+    },
+  ): Promise<InvitacionTemporal> {
+    const endpoint = id_hogar
+      ? `/hogares/${id_hogar}/invitaciones`
+      : '/hogares/actual/invitaciones-temporales';
+    return request<InvitacionTemporal>(endpoint, {
+      method: 'POST',
+      body: JSON.stringify(opciones ?? {}),
+    });
+  },
+
+  async getInvitacionActiva(): Promise<InvitacionTemporal & { activa: boolean }> {
+    return request('/hogares/actual/invitacion-activa');
+  },
+
   async invitarMiembro(data: {
     email?: string;
     nombre?: string;
@@ -299,7 +441,7 @@ export const api = {
     puede_validar_tareas?: boolean;
     puede_crear_tareas?: boolean;
     puede_gestionar_compras?: boolean;
-  }): Promise<HogarDetalle> {
+  }): Promise<HogarDetalle & { codigo_temporal?: InvitacionTemporal }> {
     const payload: Record<string, unknown> = {};
     if (data.email?.trim()) payload.email = data.email.trim();
     if (data.nombre?.trim()) payload.nombre = data.nombre.trim();
@@ -347,7 +489,7 @@ export const api = {
     });
   },
 
-  // ───────────── Tareas ─────────────
+  // ───────────── Tareas (con Evidencia Fotográfica y Validación) ─────────────
   async getTareas(): Promise<Tarea[]> {
     return request('/tareas');
   },
@@ -358,6 +500,7 @@ export const api = {
     id_asignado?: number | null;
     id_categoria?: number | null;
     puntos?: number;
+    requiere_foto?: boolean;
     fecha_limite?: string;
   }): Promise<Tarea> {
     return request('/tareas', {
@@ -366,21 +509,57 @@ export const api = {
     });
   },
 
+  async completarTareaConEvidencia(
+    id_tarea: number,
+    payload: { foto_base64?: string; uri?: string },
+  ): Promise<Tarea> {
+    if (payload.foto_base64) {
+      return request(`/tareas/${id_tarea}/completar-con-evidencia`, {
+        method: 'POST',
+        body: JSON.stringify({ foto_base64: payload.foto_base64 }),
+      });
+    }
+
+    if (payload.uri) {
+      const form = new FormData();
+      const filename = payload.uri.split('/').pop() || `evidencia_${id_tarea}.jpg`;
+      form.append('foto', {
+        uri: payload.uri,
+        name: filename,
+        type: 'image/jpeg',
+      } as any);
+      return request(`/tareas/${id_tarea}/completar-con-evidencia`, {
+        method: 'POST',
+        body: form,
+      });
+    }
+
+    throw new Error('Debes capturar o seleccionar una fotografía de evidencia');
+  },
+
   async completarTarea(id_tarea: number): Promise<Tarea> {
     return request(`/tareas/${id_tarea}/completar`, {
       method: 'PATCH',
     });
   },
 
-  async validarTarea(id_tarea: number): Promise<Tarea> {
+  async validarTarea(
+    id_tarea: number,
+    dto?: { aprobado?: boolean; comentario_revision?: string },
+  ): Promise<Tarea> {
     return request(`/tareas/${id_tarea}/validar`, {
       method: 'PATCH',
+      body: JSON.stringify(dto ?? { aprobado: true }),
     });
   },
 
-  async rechazarTarea(id_tarea: number): Promise<Tarea | { ok: boolean; eliminada?: boolean; id_tarea?: number }> {
+  async rechazarTarea(
+    id_tarea: number,
+    comentario_revision?: string,
+  ): Promise<Tarea | { ok: boolean; eliminada?: boolean; id_tarea?: number }> {
     return request(`/tareas/${id_tarea}/rechazar`, {
       method: 'PATCH',
+      body: JSON.stringify({ aprobado: false, comentario_revision }),
     });
   },
 
@@ -442,6 +621,39 @@ export const api = {
 
   async limpiarComprasCompradas(): Promise<{ ok: boolean; eliminados: number }> {
     return request('/compras/comprados', {
+      method: 'DELETE',
+    });
+  },
+
+  // ───────────── Suministros, Despensa y Monitor Exclusivo de Gas ─────────────
+  async getSuministros(id_hogar?: number): Promise<ResumenSuministros> {
+    const path = id_hogar ? `/hogares/${id_hogar}/suministros` : '/suministros';
+    return request(path);
+  },
+
+  async crearSuministro(
+    data: {
+      tipo: TipoSuministro;
+      nombre: string;
+      fecha_compra?: string;
+      dias_alerta_inicial?: number;
+      dias_alerta_critica?: number;
+      notas?: string;
+    },
+    id_hogar?: number,
+  ): Promise<RegistroSuministro> {
+    const path = id_hogar ? `/hogares/${id_hogar}/suministros` : '/suministros';
+    return request(path, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
+
+  async eliminarSuministro(id_suministro: number, id_hogar?: number): Promise<{ ok: boolean }> {
+    const path = id_hogar
+      ? `/hogares/${id_hogar}/suministros/${id_suministro}`
+      : `/suministros/${id_suministro}`;
+    return request(path, {
       method: 'DELETE',
     });
   },

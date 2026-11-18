@@ -13,19 +13,25 @@ export class AuthController {
     return this.auth.registrar(dto);
   }
 
+  /** Alias compatible con especificación v2 POST /api/auth/register */
+  @Post('register')
+  register(@Body() dto: RegistroDto) {
+    return this.auth.registrar(dto);
+  }
+
   @Post('login')
   @HttpCode(200)
   login(@Body() dto: LoginDto) {
     return this.auth.login(dto);
   }
 
-  /** Crea cuenta sencilla con Nombre + PIN. */
+  /** Crea cuenta sencilla con Nombre + PIN (+ identificador único opcional o autogenerado). */
   @Post('pin/registro')
   registrarConPin(@Body() dto: PinRegistroDto) {
     return this.auth.registrarConPin(dto);
   }
 
-  /** Re-ingresa ("relogearse") con Nombre + PIN y opcionalmente código de hogar. */
+  /** Re-ingresa ("relogearse") con Nombre o @identificador + PIN y opcionalmente código de hogar. */
   @Post('pin/login')
   @HttpCode(200)
   loginConPin(@Body() dto: PinLoginDto) {

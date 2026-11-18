@@ -10,6 +10,12 @@ export class ActualizarPerfilDto {
   nombre?: string;
 
   @IsOptional()
+  @IsString()
+  @MinLength(2)
+  @MaxLength(40)
+  identificador_unico?: string;
+
+  @IsOptional()
   @Matches(/^\d{4,6}$/, { message: 'El PIN debe tener entre 4 y 6 dígitos numéricos' })
   pin?: string;
 
@@ -25,6 +31,11 @@ export class ActualizarPerfilDto {
   @IsOptional()
   @IsIn(TEMAS_VALIDOS)
   tema_preferido?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  expo_push_token?: string;
 
   @IsOptional()
   @IsUrl()

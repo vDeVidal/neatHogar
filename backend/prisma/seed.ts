@@ -1,19 +1,21 @@
 /**
- * Seed de NeatHogar.
+ * Seed de NeatHogar (Incremento v2).
  * - Pobla las categorías base (idempotente).
  * - Crea hogares demo con ambos tipos (COLABORATIVO y JEFE_DE_HOGAR).
+ * - Pobla suministros iniciales (Monitor Exclusivo de Gas con historial + Despensa).
  *
  * Cuentas demo (PIN para todos: "1234", contraseña email: "neathogar123"):
- *   - Nombre: "Benjamín Vidal" | PIN: 1234 (Admin en Casa Demo y Jefe de Hogar en Familia Vidal)
- *   - Nombre: "Camila Moya"    | PIN: 1234
- *   - Nombre: "Diego Letelier" | PIN: 1234
- *   - Nombre: "Sofía Vidal"    | PIN: 1234
+ *   - Nombre: "Benjamín Vidal" | ID: "@benjamin.vidal" | PIN: 1234
+ *   - Nombre: "Camila Moya"    | ID: "@camila.moya"    | PIN: 1234
+ *   - Nombre: "Diego Letelier" | ID: "@diego.letelier" | PIN: 1234
+ *   - Nombre: "Sofía Vidal"    | ID: "@sofia.vidal"    | PIN: 1234
  * Códigos de invitación demo: DEMO01 (Colaborativo), FAMI01 (Jefe de Hogar)
  */
 import {
   PrismaClient,
   TipoCategoria,
   TipoHogar,
+  TipoSuministro,
   NivelDisponibilidad,
   RolMiembro,
   EstadoTarea,
@@ -60,15 +62,102 @@ async function seedCategorias() {
   return resultado;
 }
 
+async function seedSuministrosSiVacio(id_hogar: number, id_comprador: number) {
+  const total = await prisma.registroSuministro.count({ where: { id_hogar } });
+  if (total > 0) return;
+
+  await prisma.registroSuministro.createMany({
+    data: [
+      {
+        id_hogar,
+        id_comprador,
+        tipo: TipoSuministro.GAS,
+        nombre: 'Balón de Gas 15kg (Recarga anterior)',
+        fecha_compra: diasDesdeHoy(-41),
+        dias_alerta_inicial: 14,
+        dias_alerta_critica: 21,
+        activo: false,
+        notas: 'Duró 25 días aproximadamente',
+      },
+      {
+        id_hogar,
+        id_comprador,
+        tipo: TipoSuministro.GAS,
+        nombre: 'Balón de Gas 15kg',
+        fecha_compra: diasDesdeHoy(-16), // 16 días atrás -> activa alerta preventiva de 2 semanas (14 días)
+        dias_alerta_inicial: 14,
+        dias_alerta_critica: 21,
+        activo: true,
+        notas: 'Cilindro principal cocina / calefont',
+      },
+      {
+        id_hogar,
+        id_comprador,
+        tipo: TipoSuministro.DESPENSA,
+        nombre: 'Detergente Líquido 3L',
+        fecha_compra: diasDesdeHoy(-18),
+        dias_alerta_inicial: 15,
+        dias_alerta_critica: 25,
+        activo: true,
+        notas: 'Revisar nivel en lavandería',
+      },
+      {
+        id_hogar,
+        id_comprador,
+        tipo: TipoSuministro.DESPENSA,
+        nombre: 'Aceite Vegetal 1L',
+        fecha_compra: diasDesdeHoy(-5),
+        dias_alerta_inicial: 14,
+        dias_alerta_critica: 21,
+        activo: true,
+      },
+      {
+        id_hogar,
+        id_comprador,
+        tipo: TipoSuministro.DESPENSA,
+        nombre: 'Arroz Grado 1 (5kg)',
+        fecha_compra: diasDesdeHoy(-12),
+        dias_alerta_inicial: 20,
+        dias_alerta_critica: 30,
+        activo: true,
+      },
+    ],
+  });
+}
+
 async function seedHogaresDemo(cat: Record<string, number>) {
   const password_hash = await bcrypt.hash('neathogar123', 10);
   const pin_hash = await bcrypt.hash('1234', 10);
 
   const usuariosData = [
-    { nombre: 'Benjamín Vidal', email: 'admin@neathogar.cl', disponibilidad: NivelDisponibilidad.MEDIA, descripcion_carga: 'Estudiante' },
-    { nombre: 'Camila Moya', email: 'camila@neathogar.cl', disponibilidad: NivelDisponibilidad.BAJA, descripcion_carga: 'Trabajadora tiempo completo' },
-    { nombre: 'Diego Letelier', email: 'diego@neathogar.cl', disponibilidad: NivelDisponibilidad.ALTA, descripcion_carga: 'Estudiante part-time' },
-    { nombre: 'Sofía Vidal', email: 'sofia@neathogar.cl', disponibilidad: NivelDisponibilidad.MEDIA, descripcion_carga: 'Trabajadora part-time' },
+    {
+      nombre: 'Benjamín Vidal',
+      identificador_unico: '@benjamin.vidal',
+      email: 'admin@neathogar.cl',
+      disponibilidad: NivelDisponibilidad.MEDIA,
+      descripcion_carga: 'Estudiante',
+    },
+    {
+      nombre: 'Camila Moya',
+      identificador_unico: '@camila.moya',
+      email: 'camila@neathogar.cl',
+      disponibilidad: NivelDisponibilidad.BAJA,
+      descripcion_carga: 'Trabajadora tiempo completo',
+    },
+    {
+      nombre: 'Diego Letelier',
+      identificador_unico: '@diego.letelier',
+      email: 'diego@neathogar.cl',
+      disponibilidad: NivelDisponibilidad.ALTA,
+      descripcion_carga: 'Estudiante part-time',
+    },
+    {
+      nombre: 'Sofía Vidal',
+      identificador_unico: '@sofia.vidal',
+      email: 'sofia@neathogar.cl',
+      disponibilidad: NivelDisponibilidad.MEDIA,
+      descripcion_carga: 'Trabajadora part-time',
+    },
   ];
 
   const usuarios = [];
@@ -79,6 +168,7 @@ async function seedHogaresDemo(cat: Record<string, number>) {
         where: { email: u.email },
         update: {
           nombre_login,
+          identificador_unico: u.identificador_unico,
           pin_hash,
         },
         create: { ...u, nombre_login, password_hash, pin_hash },
@@ -88,9 +178,9 @@ async function seedHogaresDemo(cat: Record<string, number>) {
   const [admin, camila, diego, sofia] = usuarios;
 
   // 1) Hogar Colaborativo Demo (DEMO01)
-  const existeDemo = await prisma.hogar.findUnique({ where: { codigo_invitacion: 'DEMO01' } });
-  if (!existeDemo) {
-    const hogar = await prisma.hogar.create({
+  let hogarDemo = await prisma.hogar.findUnique({ where: { codigo_invitacion: 'DEMO01' } });
+  if (!hogarDemo) {
+    hogarDemo = await prisma.hogar.create({
       data: {
         nombre: 'Casa Demo',
         tipo_hogar: TipoHogar.COLABORATIVO,
@@ -126,7 +216,7 @@ async function seedHogaresDemo(cat: Record<string, number>) {
       const fecha_limite = diasDesdeHoy(t.dia);
       await prisma.tarea.create({
         data: {
-          id_hogar: hogar.id_hogar,
+          id_hogar: hogarDemo.id_hogar,
           id_creador: admin.id_usuario,
           id_asignado: t.asignado?.id_usuario ?? null,
           id_completador: t.completada ? (t.asignado?.id_usuario ?? admin.id_usuario) : null,
@@ -145,7 +235,7 @@ async function seedHogaresDemo(cat: Record<string, number>) {
     }
     for (const [id_usuario, pts] of Object.entries(puntos)) {
       await prisma.miembroHogar.update({
-        where: { id_usuario_id_hogar: { id_usuario: Number(id_usuario), id_hogar: hogar.id_hogar } },
+        where: { id_usuario_id_hogar: { id_usuario: Number(id_usuario), id_hogar: hogarDemo.id_hogar } },
         data: { puntos_acumulados: pts },
       });
     }
@@ -163,7 +253,7 @@ async function seedHogaresDemo(cat: Record<string, number>) {
     for (const i of items) {
       await prisma.itemCompra.create({
         data: {
-          id_hogar: hogar.id_hogar,
+          id_hogar: hogarDemo.id_hogar,
           id_creador: camila.id_usuario,
           id_comprador: i.comprado ? diego.id_usuario : null,
           id_categoria: cat[`COMPRA:${i.cat}`],
@@ -184,17 +274,18 @@ async function seedHogaresDemo(cat: Record<string, number>) {
     ];
     for (const g of gastos) {
       await prisma.gasto.create({
-        data: { id_hogar: hogar.id_hogar, id_registrador: g.quien.id_usuario, concepto: g.concepto, monto: g.monto },
+        data: { id_hogar: hogarDemo.id_hogar, id_registrador: g.quien.id_usuario, concepto: g.concepto, monto: g.monto },
       });
     }
 
     console.log('✅ Hogar demo colaborativo "Casa Demo" creado (código DEMO01).');
   }
+  await seedSuministrosSiVacio(hogarDemo.id_hogar, admin.id_usuario);
 
   // 2) Hogar Con Jefe de Hogar Demo (FAMI01)
-  const existeFami = await prisma.hogar.findUnique({ where: { codigo_invitacion: 'FAMI01' } });
-  if (!existeFami) {
-    const familia = await prisma.hogar.create({
+  let familia = await prisma.hogar.findUnique({ where: { codigo_invitacion: 'FAMI01' } });
+  if (!familia) {
+    familia = await prisma.hogar.create({
       data: {
         nombre: 'Familia Vidal',
         tipo_hogar: TipoHogar.JEFE_DE_HOGAR,
@@ -238,7 +329,8 @@ async function seedHogaresDemo(cat: Record<string, number>) {
           titulo: 'Ordenar dormitorio',
           descripcion: 'Hacer la cama y guardar la ropa.',
           puntos: 15,
-          estado: EstadoTarea.POR_VALIDAR,
+          estado: EstadoTarea.EN_REVISION,
+          fecha_completada: new Date(),
           fecha_limite: diasDesdeHoy(0),
         },
         {
@@ -269,6 +361,7 @@ async function seedHogaresDemo(cat: Record<string, number>) {
 
     console.log('✅ Hogar demo familiar "Familia Vidal" creado (código FAMI01).');
   }
+  await seedSuministrosSiVacio(familia.id_hogar, admin.id_usuario);
 }
 
 async function main() {
